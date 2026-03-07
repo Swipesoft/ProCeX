@@ -11,3 +11,9 @@ venv/
 # Python cache
 __pycache__/
 *.pyc
+
+# Outputs
+output/
+
+# Papers
+papers/
