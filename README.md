@@ -166,3 +166,60 @@ NanoBanana (image generation) uses Gemini only — no fallback for images.
 | **Total** | **~$1.00-$1.50** |
 
 Manim rendering is free (local CPU/GPU).
+
+## 🛠️ Environment Fixes Required to Get ProcEx + Manim Working
+
+### 1. Python Version Fix
+- Python 3.13 was installed by default, but **Manim does not support Python 3.13**.
+- Installed **Python 3.12** explicitly using:
+  - `winget install Python.Python.3.12`
+  - Verified with: `py -3.12 --version`
+
+### 2. Virtual Environment Creation Fix
+- Created a venv using the correct interpreter:
+  - `py -3.12 -m venv venv`
+
+### 3. PowerShell Execution Policy Fix
+- Activation failed due to script restrictions:
+  - Error: *"running scripts is disabled on this system"*
+- Fixed by enabling safe local script execution:
+  - `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`
+
+### 4. Virtual Environment Activation
+- Successfully activated using:
+  - `.\venv\Scripts\activate`
+
+### 5. Manim Installation Fix
+- Manim was previously installed globally under Python 3.13 (unsupported).
+- Reinstalled **inside the Python 3.12 venv**:
+  - `pip install manim`
+- Verified with:
+  - `manim --version`
+
+### 6. FFmpeg Fix
+- FFmpeg was installed and verified using:
+  - `ffmpeg -version`
+- Ensured it is available system‑wide (required by Manim).
+
+### 7. Requirements File Cleanup
+- Cleaned `requirements.txt` to include only pip‑installable packages.
+- Removed system‑level tools (Manim, FFmpeg, LaTeX) from pip requirements.
+- Ensured compatibility with Python 3.12.
+
+### 8. Final Dependency Installation
+- Installed project dependencies inside the venv:
+  - `pip install -r requirements.txt`
+
+### 9. System Tools (External)
+- FFmpeg installed system‑wide.
+- LaTeX (MiKTeX) optional for Manim math rendering.
+
+### 10. Output Directory Maintenance Commands
+- Navigated to project root:
+  - `cd C:\Users\emmyf\Downloads\procex\procex`
+- Previewed which files would be deleted:
+  - `python flush_output.py --dry-run`
+- Performed actual cleanup:
+  - `python flush_output.py --yes`
+
+---
