@@ -1,0 +1,35 @@
+domain: CS_SYSTEMS
+display_name: "Computer Science & Systems"
+
+default_visual_strategy: MANIM
+image_gen_triggers: []   # CS always Manim
+
+script_instructions: |
+  Start with the problem, not the solution. Show WHY this exists before WHAT it does.
+  Use concrete examples with real numbers before generalization.
+  For algorithms: walk through one complete example step by step.
+  For architectures: build the diagram incrementally — add one component per beat.
+  Avoid jargon without definition. Assume smart, curious non-specialist.
+  Target pacing: ~30-40 seconds per scene.
+
+manim_style: |
+  Dark cinematic background (#0A0A0F).
+  Cyan (#00D4FF) for data structures, purple (#7B2FFF) for pointers/references.
+  Code blocks: use Code() object with dark theme, highlight active line.
+  System diagrams: Rectangle nodes + labeled arrows.
+  Queues/stacks: animated array cells with color-coded push/pop.
+  Trees/graphs: use custom VGroup with Circle nodes and Line edges.
+  Network packets: small Rectangle objects moving along paths.
+
+manim_elements:
+  - Code() object with syntax highlighting for code walkthroughs
+  - Array visualization (row of Rectangle cells)
+  - Tree structure (Circle + Line edges)
+  - State machine (Circle nodes + curved arrows)
+  - System architecture diagram (Rectangle components + Arrow data flow)
+  - Memory layout (stacked Rectangle cells with labels)
+  - Algorithm step counter (integer display updating each step)
+
+timing_guidance: |
+  For code walkthroughs: highlight one line per narration beat.
+  For algorithm steps: advance visualization when narrator says each step.

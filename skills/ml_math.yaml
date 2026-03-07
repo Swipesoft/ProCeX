@@ -1,0 +1,40 @@
+domain: ML_MATH
+display_name: "Machine Learning & Mathematics"
+
+# Default visual strategy for most scenes
+default_visual_strategy: MANIM
+image_gen_triggers: []   # ML/Math never uses IMAGE_GEN — always Manim
+
+script_instructions: |
+  Write with mathematical precision. Define all notation before using it.
+  Build concepts from first principles — assume an intelligent but non-specialist audience.
+  Each scene should introduce ONE core idea, then show it from multiple angles.
+  Use analogies from physics or engineering where helpful.
+  Prefer active voice: "the gradient points uphill" over "the gradient is pointed uphill".
+  Target pacing: ~30-45 seconds per scene. For 10-minute videos, write 15-18 scenes.
+
+manim_style: |
+  Dark cinematic theme. Background #0A0A0F.
+  Primary objects in electric cyan (#00D4FF) with purple (#7B2FFF) accents.
+  Equations typeset with MathTex, always centered before animating.
+  Use NumberPlane (not Axes) for coordinate systems.
+  ArrowVectorField for gradient/vector fields.
+  Smooth camera moves: self.camera.frame.animate.move_to() and scale().
+  Prefer Write() for equations, FadeIn() for diagrams, GrowArrow() for vectors.
+  Always begin and end scenes with a 0.3s breathing pause (self.wait(0.3)).
+
+manim_elements:
+  - MathTex for equations and notation
+  - Matrix objects for linear algebra
+  - NumberPlane + vector fields for optimization landscapes
+  - Graph (VGroup of edges) for neural network architectures
+  - BarChart / FunctionGraph for training curves
+  - SVD decomposition animations (show U, Σ, V matrices)
+  - Gradient descent ball rolling down a surface
+  - Attention heatmap (grid of colored squares)
+
+timing_guidance: |
+  Each self.play() run_time should be derived from the word timestamps.
+  A word spoken over 0.5s → the corresponding animation takes 0.5s.
+  Use self.wait() between animations to let the narration breathe.
+  Total scene animation time should match scene duration_seconds exactly.

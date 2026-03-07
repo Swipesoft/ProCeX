@@ -1,0 +1,78 @@
+domain: MEDICAL
+display_name: "Medical & Anatomy"
+
+default_visual_strategy: MANIM   # DEFAULT is still Manim — image gen only when anatomy needed
+
+# IMAGE_GEN is triggered only when the scene description explicitly involves
+# physical anatomical structures the viewer needs to SEE spatially.
+image_gen_triggers:
+  - "anatomy of"
+  - "cross-section"
+  - "histology"
+  - "gross anatomy"
+  - "organ structure"
+  - "anatomical location"
+  - "body regions"
+  - "skeletal"
+  - "vascular anatomy"
+  - "nerve pathway"
+  - "organ systems overview"
+
+# Scenes about MECHANISMS, PATHOPHYSIOLOGY, PHARMACOLOGY → always MANIM:
+manim_preferred_topics:
+  - pathophysiology
+  - pharmacology
+  - mechanism of action
+  - clinical reasoning
+  - drug interaction
+  - receptor binding
+  - enzyme kinetics
+  - electrolyte imbalance
+  - acid-base
+  - coagulation cascade
+  - inflammatory pathway
+  - feedback loop
+  - cell signaling
+  - NCLEX priority
+
+script_instructions: |
+  Use clinical terminology with lay-language parenthetical explanations on first use.
+  Narrate pathophysiology as a STORY: normal state → trigger → cascade → outcome.
+  For pharmacology: mechanism first, then clinical effect, then nursing implications.
+  Keep NCLEX framing in mind: assess → analyze → plan → implement → evaluate (ADPIE).
+  Target pacing: ~35-50 seconds per scene for complex mechanisms.
+  Build visual complexity scene by scene — don't front-load all structures.
+
+manim_style: |
+  Dark cinematic background (#0A0A0F).
+  Use warm gold (#FFD700) for clinical priority callouts and "PRIORITY" badges.
+  Cyan (#00D4FF) for normal/healthy state; orange (#FF6B35) for pathological state.
+  Red (#FF3B30) ONLY for critical/life-threatening findings.
+  Green (#00FF88) for treatment/improvement arrows.
+  Flowcharts: RoundedRectangle nodes connected by LabeledArrow.
+  Cascades: vertical chain of nodes with animated GrowArrow connections.
+  Drug mechanism: receptor diagram with LabeledDot binding sites.
+
+manim_elements:
+  - Flowchart (RoundedRectangle + LabeledArrow) for pathophysiology cascades
+  - Pie/bar charts for lab values vs normal ranges
+  - Simple cell diagrams (Circle + labeled organelles) for MOA
+  - Timeline for disease progression
+  - Split-screen before/after (normal vs pathological)
+  - NCLEX BowTie layout (5-box: condition | actions | outcomes)
+  - Table for drug comparisons
+  - Vital sign trend graph (FunctionGraph)
+
+image_gen_style: |
+  Medical illustration style. Clean, labeled, educational.
+  White or very light blue background for anatomy diagrams.
+  Use anatomical position conventions.
+  Include scale bar where relevant.
+  Add clear callout labels for all major structures.
+  No photorealism — prefer clean medical textbook illustration style.
+  Render at highest available resolution for label legibility.
+
+timing_guidance: |
+  Pathophysiology cascades: animate each step as narration reaches it.
+  Use word timestamps to trigger each arrow/node: appear when narrator says the term.
+  Total scene animation time must match duration_seconds.

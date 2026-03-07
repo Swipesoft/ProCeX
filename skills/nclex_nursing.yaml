@@ -1,0 +1,50 @@
+domain: NCLEX_NURSING
+display_name: "NCLEX & Nursing Education"
+
+default_visual_strategy: MANIM
+
+# Only trigger IMAGE_GEN for physical assessment / anatomy identification scenes
+image_gen_triggers:
+  - "physical assessment"
+  - "anatomy of"
+  - "inspection findings"
+  - "wound assessment"
+  - "skin assessment"
+  - "auscultation sites"
+  - "anatomical landmark"
+
+script_instructions: |
+  Frame everything through NCLEX clinical reasoning: ADPIE and Maslow's hierarchy.
+  Lead with the PRIORITY: what does the nurse do FIRST and WHY.
+  Use SATA (Select All That Apply) framing for multi-concept scenes.
+  Highlight safety, infection control, and therapeutic communication explicitly.
+  For pharmacology: onset-peak-duration, nursing implications, patient teaching.
+  For lab values: normal range → critical values → nursing action.
+  Use relatable patient scenarios to anchor abstract concepts.
+  Target pacing: 40-55 seconds per scene (NCLEX concepts are dense).
+  For 10-minute videos write 12-15 scenes.
+
+manim_style: |
+  Dark cinematic background (#0A0A0F).
+  PRIORITY badge: gold (#FFD700) bold label — use for "nurse does FIRST" items.
+  SAFETY badge: orange (#FF6B35) for safety-critical steps.
+  CRITICAL VALUES: red (#FF3B30) text with pulsing animation.
+  Normal ranges: cyan (#00D4FF). Abnormal: orange or red depending on severity.
+  BowTie format: 5 boxes (Condition | Nursing Actions | Expected Outcomes).
+  Matrix Multiple Response: grid of cells that highlight/check on cue.
+  Step-by-step clinical reasoning: animated numbered list building down.
+
+manim_elements:
+  - NCLEX BowTie (5-box RoundedRectangle layout)
+  - Matrix Multiple Response (grid + checkmarks)
+  - Lab value gauge (normal range bar + patient value marker)
+  - Drug card (styled rectangle: name / class / MOA / nursing implications)
+  - Priority ranking (numbered list with animated reordering)
+  - ADPIE flowchart (Assess → Diagnose → Plan → Implement → Evaluate)
+  - Maslow's pyramid (stacked levels, highlight active tier)
+  - Clinical scenario vignette box (styled text card)
+
+timing_guidance: |
+  Build clinical reasoning step by step — each ADPIE step appears on narration beat.
+  For medication scenarios: name appears first, then MOA, then nursing implications.
+  Total must match duration_seconds. Use self.wait() for processing pauses.
