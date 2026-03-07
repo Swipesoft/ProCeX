@@ -70,6 +70,10 @@ class Scene:
     # Timestamps scoped to this scene (subset of global)
     timestamps:         list = field(default_factory=list)  # list[WordTimestamp]
 
+    # TTS audio for this scene (set by TTSAgent)
+    tts_audio_path:     str   = ""
+    tts_duration:       float = 0.0
+
     # Render output
     clip_path:          Optional[str] = None
     render_attempts:    int = 0

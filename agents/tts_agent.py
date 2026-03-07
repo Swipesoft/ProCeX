@@ -89,6 +89,8 @@ class TTSAgent(BaseAgent):
                 chunk_duration = len(text.split()) / 2.8
 
             scene.duration_seconds = chunk_duration
+            scene.tts_audio_path   = chunk_path
+            scene.tts_duration     = chunk_duration
             scene_audio_paths.append(chunk_path)
 
             # Estimate word timestamps proportionally by character position
