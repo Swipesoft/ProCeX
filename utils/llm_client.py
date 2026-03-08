@@ -1,9 +1,15 @@
 """
 utils/llm_client.py
-Unified text-completion client: Claude → Gemini → OpenAI fallback chain.
-Single interface: client.complete(system, user, json_mode) → str
-"""
+Unified text-completion client with per-call primary provider routing.
 
+Default chain: Claude → Gemini → OpenAI
+Each agent can specify a primary_provider ("claude"|"gemini"|"openai") to
+move its preferred LLM to the front of the chain. The other two remain as
+fallbacks in default order.
+
+Per-agent routing is configured in ProcExConfig.agent_primary_llm.
+Agents pass primary_provider= on each self.llm.complete() call.
+"""
 from __future__ import annotations
 import json
 import time
@@ -12,14 +18,14 @@ from typing import Optional
 from config import ProcExConfig
 
 
+# Default provider order when no primary is specified
+_DEFAULT_ORDER = ["claude", "gemini", "openai"]
+
+
 class LLMClient:
-    """
-    Tries Claude first. On failure/unavailability → Gemini. On failure → OpenAI.
-    All three share the same call signature.
-    """
 
     def __init__(self, cfg: ProcExConfig):
-        self.cfg = cfg
+        self.cfg         = cfg
         self._anthropic  = None
         self._genai      = None
         self._openai     = None
@@ -47,25 +53,33 @@ class LLMClient:
             except ImportError:
                 print("[LLMClient] openai SDK not installed — skipping OpenAI")
 
-    # ── Primary interface ─────────────────────────────────────────────────
+    # ── Primary interface ─────────────────────────────────────────────────────
 
     def complete(
         self,
         system_prompt: str,
         user_prompt: str,
         *,
-        json_mode: bool = False,
-        max_tokens: int = 8192,
-        temperature: float = 0.7,
-        model_override: Optional[str] = None,   # force a specific model
+        json_mode:        bool            = False,
+        max_tokens:       int             = 8192,
+        temperature:      float           = 0.7,
+        model_override:   Optional[str]   = None,   # force a specific model string
+        primary_provider: Optional[str]   = None,   # "claude" | "gemini" | "openai"
     ) -> str:
         """
         Returns the text completion. Raises RuntimeError only if all providers fail.
+
+        primary_provider moves the named provider to position 0 of the chain.
+        The other two providers remain as ordered fallbacks.
+        model_override forces a specific model string on all providers that accept it.
         """
-        providers = self._build_provider_chain(model_override)
+        chain = self._build_provider_chain(
+            primary_provider=primary_provider,
+            model_override=model_override,
+        )
 
         last_error = None
-        for provider_fn in providers:
+        for provider_name, provider_fn in chain:
             try:
                 result = provider_fn(system_prompt, user_prompt, max_tokens, temperature)
                 if json_mode:
@@ -73,7 +87,7 @@ class LLMClient:
                 return result
             except Exception as e:
                 last_error = e
-                print(f"[LLMClient] Provider failed: {e} — trying next...")
+                print(f"[LLMClient] {provider_name} failed: {e} — trying next...")
                 time.sleep(1)
 
         raise RuntimeError(f"All LLM providers failed. Last error: {last_error}")
@@ -83,43 +97,73 @@ class LLMClient:
         system_prompt: str,
         user_prompt: str,
         *,
-        max_tokens: int = 8192,
-        temperature: float = 0.3,
+        max_tokens:       int           = 8192,
+        temperature:      float         = 0.3,
+        primary_provider: Optional[str] = None,
     ) -> dict | list:
-        """Convenience: complete + parse JSON."""
+        """Convenience: complete + parse JSON. Passes primary_provider through."""
         raw = self.complete(
             system_prompt, user_prompt,
-            json_mode=True, max_tokens=max_tokens, temperature=temperature
+            json_mode=True,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            primary_provider=primary_provider,
         )
         return json.loads(raw)
 
-    # ── Provider chain ───────────────────────────────────────────────────
+    # ── Provider chain builder ────────────────────────────────────────────────
 
-    def _build_provider_chain(self, model_override: Optional[str]):
-        chain = []
+    def _build_provider_chain(
+        self,
+        primary_provider: Optional[str],
+        model_override:   Optional[str],
+    ) -> list[tuple[str, callable]]:
+        """
+        Build the ordered list of (name, callable) provider functions.
 
-        if self._anthropic:
-            chain.append(
+        If primary_provider is given, that provider is placed first.
+        Available providers are ordered by _DEFAULT_ORDER for the remainder.
+        Unavailable providers (no client / no key) are silently skipped.
+        """
+        # All available providers in default order
+        all_providers = {
+            "claude": (
+                self._anthropic,
                 lambda s, u, mt, temp: self._call_claude(s, u, mt, temp, model_override)
-            )
-        if self._genai:
-            chain.append(
+            ),
+            "gemini": (
+                self._genai,
                 lambda s, u, mt, temp: self._call_gemini(s, u, mt, temp, model_override)
-            )
-        if self._openai:
-            chain.append(
+            ),
+            "openai": (
+                self._openai,
                 lambda s, u, mt, temp: self._call_openai(s, u, mt, temp, model_override)
-            )
+            ),
+        }
+
+        # Build ordered list of available providers
+        order = list(_DEFAULT_ORDER)   # ["claude", "gemini", "openai"]
+
+        if primary_provider and primary_provider in order:
+            # Move primary to front, keep others in default order
+            order.remove(primary_provider)
+            order.insert(0, primary_provider)
+
+        chain = []
+        for name in order:
+            client, fn = all_providers[name]
+            if client is not None:
+                chain.append((name, fn))
 
         if not chain:
             raise RuntimeError("No LLM providers configured. Set at least one API key.")
+
         return chain
 
-    # ── Claude ────────────────────────────────────────────────────────────
+    # ── Claude ────────────────────────────────────────────────────────────────
 
     def _call_claude(self, system, user, max_tokens, temperature, model_override):
         model = model_override or self.cfg.claude_model
-        # Clamp model to Claude models only
         if not model.startswith("claude"):
             model = self.cfg.claude_model
 
@@ -132,7 +176,7 @@ class LLMClient:
         )
         return response.content[0].text
 
-    # ── Gemini ───────────────────────────────────────────────────────────
+    # ── Gemini ────────────────────────────────────────────────────────────────
 
     def _call_gemini(self, system, user, max_tokens, temperature, model_override):
         from google.genai import types
@@ -151,7 +195,7 @@ class LLMClient:
         )
         return response.text
 
-    # ── OpenAI ───────────────────────────────────────────────────────────
+    # ── OpenAI ────────────────────────────────────────────────────────────────
 
     def _call_openai(self, system, user, max_tokens, temperature, model_override):
         model = model_override or self.cfg.openai_model
@@ -162,49 +206,37 @@ class LLMClient:
             model=model,
             messages=[
                 {"role": "system", "content": system},
-                {"role": "user", "content": user},
+                {"role": "user",   "content": user},
             ],
             max_tokens=max_tokens,
             temperature=temperature,
         )
         return response.choices[0].message.content
 
-    # ── JSON extraction ──────────────────────────────────────────────────
+    # ── JSON extraction ───────────────────────────────────────────────────────
 
     @staticmethod
     def _extract_json(text: str) -> str:
-        """
-        Strip markdown code fences and extract the first valid JSON object/array.
-        Handles: ```json ... ```, ``` ... ```, and raw JSON.
-        """
-        # Remove fences
         text = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.MULTILINE)
-        text = re.sub(r"```\s*$", "", text.strip(), flags=re.MULTILINE)
+        text = re.sub(r"```\s*$",           "", text.strip(), flags=re.MULTILINE)
         text = text.strip()
 
-        # Find first { or [ — handle models that add prose before JSON
         for start_char, end_char in [('{', '}'), ('[', ']')]:
             idx = text.find(start_char)
             if idx != -1:
-                # Find matching close bracket
-                depth = 0
-                in_str = False
-                escape = False
+                depth, in_str, escape = 0, False, False
                 for i, ch in enumerate(text[idx:], idx):
                     if escape:
-                        escape = False
-                        continue
+                        escape = False; continue
                     if ch == '\\' and in_str:
-                        escape = True
-                        continue
+                        escape = True;  continue
                     if ch == '"' and not escape:
                         in_str = not in_str
                     if not in_str:
-                        if ch == start_char:
-                            depth += 1
+                        if ch == start_char: depth += 1
                         elif ch == end_char:
                             depth -= 1
                             if depth == 0:
                                 return text[idx:i+1]
 
-        return text  # return as-is, let json.loads raise the error
+        return text

@@ -82,7 +82,7 @@ class ScriptWriter(BaseAgent):
 
         for attempt in range(self.cfg.max_llm_retries):
             try:
-                result = self.llm.complete_json(system, user, max_tokens=16384, temperature=0.75)
+                result = self.llm.complete_json(system, user, max_tokens=16384, temperature=0.75, primary_provider="gemini")
                 break
             except Exception as e:
                 self._log(f"Attempt {attempt+1} failed: {e}")

@@ -147,6 +147,7 @@ class VisualDirector(BaseAgent):
                     _build_director_prompt(state),
                     max_tokens=16384,
                     temperature=0.4,
+                    primary_provider="gemini",
                 )
                 break
             except Exception as e:
@@ -190,3 +191,4 @@ class VisualDirector(BaseAgent):
         self._log(f"Strategy distribution: {dict(counts)}")
 
         return state
+

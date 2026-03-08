@@ -99,6 +99,31 @@ class ProcExConfig:
     gemini_text_model:   str = "gemini-3-flash-preview"
     openai_model:        str = "gpt-5.4-2026-03-05"
 
+    # ── Per-agent primary LLM ────────────────────────────────────────────────
+    # Each agent starts its provider chain with the named primary.
+    # The other two providers remain as fallbacks in the default order.
+    # Valid values: "claude" | "gemini" | "openai"
+    #
+    # Routing rationale:
+    #   gemini  → ScriptWriter, VisualDirector  (strong at long-form synthesis)
+    #   claude  → ManimCoder, DomainRouter       (strong at structured code + reasoning)
+    #   claude  → everything else (default)
+    agent_primary_llm: dict = None   # populated in __post_init__
+
+    def __post_init__(self):
+        if self.agent_primary_llm is None:
+            self.agent_primary_llm = {
+                "ScriptWriter":   "gemini",   # transcript/narration generation
+                "VisualDirector": "gemini",   # scene-level creative direction
+                "DomainRouter":   "claude",   # structured classification
+                "ManimCoder":     "claude",   # code generation
+                "TTSAgent":       "claude",   # minimal LLM use
+                "ImageGenAgent":  "gemini",   # image prompt enrichment
+                "RendererAgent":  "claude",
+                "AssemblerAgent": "claude",
+            }
+        self.make_dirs()
+
     # ── Image Generation (NanoBanana) ─────────
     # Pro  → detailed anatomy, labeled diagrams, search grounding
     # Fast → background images, simpler visuals, hybrid scenes
@@ -162,3 +187,4 @@ class ProcExConfig:
         if not self.elevenlabs_api_key and not self.openai_api_key:
             issues.append("No TTS key set — set OPENAI_API_KEY (recommended) or ELEVENLABS_API_KEY")
         return issues
+

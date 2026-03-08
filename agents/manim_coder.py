@@ -237,7 +237,7 @@ class ManimCoder(BaseAgent):
         """
         self._log(f"Scene {scene.id}: render failed — regenerating with error context...")
         error_summary = self._summarise_render_error(render_error)
-        code = self._generate_scene_code(
+        code          = self._generate_scene_code(
             scene, skill_pack, initial_error=error_summary
         )
         is_fallback = f"Scene {scene.id}" in code[:80]
@@ -268,6 +268,7 @@ class ManimCoder(BaseAgent):
                     json_mode=False,
                     max_tokens=6144,
                     temperature=0.3,
+                    primary_provider="claude",
                 )
                 code = self._clean_code(raw, scene.manim_class_name)
 
@@ -369,3 +370,4 @@ class ManimCoder(BaseAgent):
         parts.append("\nFull traceback (last portion):")
         parts.append(error[-600:])
         return "\n".join(parts)
+
