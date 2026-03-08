@@ -19,6 +19,7 @@ the voice doesn't spell out "X transpose T dot W alpha" letter by letter.
 from __future__ import annotations
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import subprocess
 import tempfile
 import shutil
@@ -53,19 +54,17 @@ class TTSAgent(BaseAgent):
         all_timestamps:    list[WordTimestamp]  = []
         time_offset = 0.0
 
-        for scene in state.scenes:
+        def _process_scene(scene):
+            """Process one scene: TTS call + duration probe + timestamps. Thread-safe."""
             raw_text = scene.narration_text.strip()
             if not raw_text:
-                self._log(f"Scene {scene.id}: empty narration — skipping")
-                continue
+                return scene, None, 0.0
 
-            # Clean math/LaTeX notation before sending to TTS
-            text = self._clean_narration_for_tts(raw_text)
-
-            self._log(f"Scene {scene.id}: {len(text)} chars -> OpenAI TTS...")
+            text       = self._clean_narration_for_tts(raw_text)
             chunk_path = os.path.join(
                 audio_dir, f"{state.topic_slug}_scene_{scene.id:02d}.mp3"
             )
+            self._log(f"Scene {scene.id}: {len(text)} chars -> OpenAI TTS...")
 
             try:
                 response = client.audio.speech.create(
@@ -75,49 +74,68 @@ class TTSAgent(BaseAgent):
                     response_format = "mp3",
                 )
                 response.stream_to_file(chunk_path)
-
             except Exception as e:
                 self._log(f"Scene {scene.id} TTS failed: {e}")
                 chunk_path = self._write_silence(scene.duration_seconds, chunk_path)
-                scene_audio_paths.append(chunk_path)
-                time_offset += scene.duration_seconds
-                continue
+                return scene, chunk_path, scene.duration_seconds
 
-            # Probe actual audio duration
             chunk_duration = self._probe_duration(chunk_path)
             if chunk_duration <= 0:
                 chunk_duration = len(text.split()) / 2.8
+
+            # Build per-scene word timestamps (relative, offset applied later)
+            words       = text.split()
+            total_chars = len(text)
+            char_cursor = 0
+            scene_ts    = []
+            for word in words:
+                sr = char_cursor / max(total_chars, 1)
+                er = (char_cursor + len(word)) / max(total_chars, 1)
+                scene_ts.append(WordTimestamp(
+                    word  = word,
+                    start = round(sr * chunk_duration, 4),
+                    end   = round(er * chunk_duration, 4),
+                ))
+                char_cursor += len(word) + 1
+            scene._tts_relative_ts = scene_ts   # stash for offset application below
+            return scene, chunk_path, chunk_duration
+
+        # Run TTS calls in parallel
+        max_tts_workers = min(len(state.scenes), self.cfg.tts_workers)
+        scene_results   = {}  # scene.id -> (chunk_path, duration)
+
+        with ThreadPoolExecutor(max_workers=max_tts_workers) as pool:
+            futures = {pool.submit(_process_scene, s): s for s in state.scenes}
+            for fut in as_completed(futures):
+                s, chunk_path, dur = fut.result()
+                if chunk_path:
+                    scene_results[s.id] = (chunk_path, dur)
+                    self._log(f"Scene {s.id}: {dur:.1f}s TTS done")
+
+        # Apply global time offsets in scene order (must be sequential)
+        for scene in state.scenes:
+            if scene.id not in scene_results:
+                continue
+            chunk_path, chunk_duration = scene_results[scene.id]
 
             scene.duration_seconds = chunk_duration
             scene.tts_audio_path   = chunk_path
             scene.tts_duration     = chunk_duration
             scene_audio_paths.append(chunk_path)
 
-            # Estimate word timestamps proportionally by character position
-            words        = text.split()
-            total_chars  = len(text)
-            char_cursor  = 0
-
-            for word in words:
-                start_ratio = char_cursor / max(total_chars, 1)
-                end_ratio   = (char_cursor + len(word)) / max(total_chars, 1)
-                all_timestamps.append(WordTimestamp(
-                    word  = word,
-                    start = round(time_offset + start_ratio * chunk_duration, 4),
-                    end   = round(time_offset + end_ratio   * chunk_duration, 4),
-                ))
-                char_cursor += len(word) + 1  # +1 for space
-
+            # Apply cumulative offset to relative timestamps
+            relative_ts = getattr(scene, "_tts_relative_ts", [])
             scene.timestamps = [
-                t for t in all_timestamps
-                if t.start >= time_offset and t.end <= time_offset + chunk_duration + 0.1
+                WordTimestamp(
+                    word  = t.word,
+                    start = round(t.start + time_offset, 4),
+                    end   = round(t.end   + time_offset, 4),
+                )
+                for t in relative_ts
             ]
-
+            all_timestamps.extend(scene.timestamps)
             time_offset += chunk_duration
-            self._log(
-                f"Scene {scene.id}: {chunk_duration:.1f}s, "
-                f"cumulative offset={time_offset:.1f}s"
-            )
+            self._log(f"Scene {scene.id}: offset applied, cumulative={time_offset:.1f}s")
 
         # Concatenate all chunks into final audio file
         final_audio = os.path.join(audio_dir, f"{state.topic_slug}.mp3")

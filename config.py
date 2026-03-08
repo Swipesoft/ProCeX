@@ -96,8 +96,8 @@ class ProcExConfig:
     # ── LLM Models (text) ─────────────────────
     # Fallback chain: Claude → Gemini → OpenAI
     claude_model:        str = "claude-sonnet-4-6"
-    gemini_text_model:   str = "gemini-2.0-flash"
-    openai_model:        str = "gpt-4o"
+    gemini_text_model:   str = "gemini-3-flash-preview"
+    openai_model:        str = "gpt-5.4-2026-03-05"
 
     # ── Image Generation (NanoBanana) ─────────
     # Pro  → detailed anatomy, labeled diagrams, search grounding
@@ -118,6 +118,13 @@ class ProcExConfig:
 
     # ── Pipeline ──────────────────────────────
     max_llm_retries:     int   = 3
+
+    # ── Parallel worker counts ─────────────────────────────────────────
+    tts_workers:         int   = 4   # parallel TTS API calls per scene
+    coder_workers:       int   = 4   # parallel ManimCoder LLM calls
+    image_workers:       int   = 3   # parallel ImageGen API calls
+    render_workers:      int   = 2   # parallel Manim subprocesses
+    # render_workers: keep ≤ cpu_count//2 — Manim is CPU-intensive at 4K
     manim_timeout_secs:  int   = 420       # 7 min per scene — generous for complex 4K renders
     enable_critic_loop:  bool  = False
     scenes_per_minute:   float = 2.5       # ~24s avg per scene; tuned for engagement

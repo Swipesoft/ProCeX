@@ -56,6 +56,45 @@ class RendererAgent(BaseAgent):
         )
         return state
 
+
+    # ── Public single-attempt method (used by parallel queue runner) ──────────
+
+    def render_scene_once(
+        self,
+        scene,
+        resolution: str,
+        out_dir: str,
+    ) -> tuple:
+        """
+        Attempt to render one scene exactly once.
+        Returns (clip_path, None) on success, (None, error_str) on failure.
+
+        The parallel queue runner uses this instead of run() so it can route
+        failures to the regen queue without any cross-agent callback inside
+        the renderer itself.
+        """
+        try:
+            clip_path = self._render_scene(scene, resolution, out_dir)
+            return clip_path, None
+        except Exception as e:
+            return None, str(e)
+
+    def render_emergency(
+        self,
+        scene,
+        resolution: str,
+        out_dir: str,
+    ) -> str | None:
+        """
+        Produce a plain dark fallback clip when all regen attempts are exhausted.
+        Returns clip path, or None if even the fallback fails.
+        """
+        try:
+            return self._render_emergency_fallback(scene, resolution, out_dir)
+        except Exception as e:
+            self._log(f"Scene {scene.id}: emergency fallback failed: {e}")
+            return None
+
     # ── Render with regeneration loop ─────────────────────────────────────────
 
     def _render_with_regen(
