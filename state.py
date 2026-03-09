@@ -79,6 +79,11 @@ class Scene:
     render_attempts:    int = 0
     render_error:       Optional[str] = None
 
+    # Critic metadata
+    critic_score:       Optional[int] = None
+    critic_passed:      Optional[bool] = None
+    critic_summary:     str = ""
+
 
 # ─────────────────────────────────────────────
 # Pipeline State

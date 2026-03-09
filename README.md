@@ -94,6 +94,25 @@ and decides per-scene which renderer to use:
 
 ---
 
+## Layout Critic Loop (optional)
+
+ProcEx now includes an optional scene-layout critic loop for Manim-heavy scenes.
+Enable it in `config.py`:
+
+- `enable_critic_loop=True`
+- `critic_rounds=2` (max rewrite rounds)
+- `critic_pass_score=78`
+
+How it works:
+1. ManimCoder generates candidate scene code.
+2. LayoutCritic scores density/overlap/readability risk.
+3. If score is below threshold, critic feedback is injected back into ManimCoder.
+4. Best accepted candidate is rendered.
+
+The default critic is heuristic and local (zero extra API cost). Optional LLM augmentation can be enabled with `critic_use_llm=True`.
+
+---
+
 ## Skill Packs
 
 Each domain has a `skills/*.yaml` file that injects:
