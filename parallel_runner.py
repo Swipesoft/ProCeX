@@ -160,6 +160,7 @@ def run_generation_render_pipeline(
     from agents.manim_coder     import ManimCoder, _fallback_scene
     from agents.image_gen_agent import ImageGenAgent
     from agents.renderer        import RendererAgent, REGEN_RETRIES
+    from agents.layout_critic   import LayoutCritic
 
     manim_dir  = cfg.dirs["manim"]
     scenes_dir = cfg.dirs["scenes"]
@@ -170,6 +171,7 @@ def run_generation_render_pipeline(
     coder    = ManimCoder(cfg, llm)
     imager   = ImageGenAgent(cfg, llm)
     renderer = RendererAgent(cfg, llm)
+    critic   = LayoutCritic(cfg, llm)
 
     # Classify scenes by their initial strategy
     manim_scenes  = [s for s in state.scenes if s.visual_strategy in
@@ -223,9 +225,36 @@ def run_generation_render_pipeline(
                 scene.manim_file_path  = os.path.join(manim_dir, f"scene_{scene.id:02d}.py")
 
             try:
-                code = coder._generate_scene_code(
-                    scene, state.skill_pack, initial_error=task.render_error
-                )
+                critic_error = task.render_error
+                code = ""
+                rounds = max(1, cfg.critic_rounds) if cfg.enable_critic_loop else 1
+
+                for round_idx in range(rounds):
+                    code = coder._generate_scene_code(
+                        scene, state.skill_pack, initial_error=critic_error or ""
+                    )
+
+                    if not cfg.enable_critic_loop or not critic.applies_to(scene):
+                        break
+
+                    report = critic.review(scene, code)
+                    scene.critic_score = report.score
+                    scene.critic_passed = report.passed
+                    scene.critic_summary = critic.build_retry_context(report)
+
+                    if report.passed:
+                        log(
+                            f"Coder-{wid}: Scene {scene.id} critic PASS "
+                            f"(score={report.score}, round={round_idx+1})"
+                        )
+                        break
+
+                    critic_error = critic.build_retry_context(report)
+                    log(
+                        f"Coder-{wid}: Scene {scene.id} critic FAIL "
+                        f"(score={report.score}, round={round_idx+1})"
+                    )
+
                 coder._write_scene_file(scene.manim_file_path, code)
             except Exception as e:
                 log(f"Coder-{wid}: Scene {scene.id} generation exception: {e} — using fallback")

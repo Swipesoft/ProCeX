@@ -152,6 +152,13 @@ class ProcExConfig:
     # render_workers: keep ≤ cpu_count//2 — Manim is CPU-intensive at 4K
     manim_timeout_secs:  int   = 420       # 7 min per scene — generous for complex 4K renders
     enable_critic_loop:  bool  = False
+    critic_rounds:       int   = 2         # max regenerate loops per scene
+    critic_pass_score:   int   = 78        # minimum score needed to accept candidate
+    critic_use_llm:      bool  = False     # optional text-LLM critic augmentation
+    critic_primary_provider: str = "gemini"
+    critic_max_objects:  int   = 14        # heuristic density threshold
+    critic_max_manual_shifts: int = 8      # many manual shifts => collision risk
+    critic_max_unbalanced_entrances: int = 3
     scenes_per_minute:   float = 2.5       # ~24s avg per scene; tuned for engagement
 
     # ── Output dirs ───────────────────────────
