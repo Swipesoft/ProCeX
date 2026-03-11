@@ -74,7 +74,13 @@ OUTPUT FORMAT: Return ONLY valid JSON array — no fences, no prose.
     "visual_prompt": "Detailed, precise prompt for the ManimCoder or ImageGenAgent...",
     "needs_labels": false,
     "label_list": [],
-    "element_count": 4
+    "element_count": 4,
+    "zone_allocation": {
+      "scene_title":   "TITLE",
+      "main_content":  "MAIN",
+      "sidebar_note":  "UPPER_SIDEBAR",
+      "footer_tip":    "FOOTER"
+    }
   },
   ...
 ]
@@ -84,6 +90,31 @@ arrows, text blocks) that will appear on screen simultaneously at peak density.
 This is used by the layout critic to decide whether to inspect the rendered scene.
 Be realistic — a simple title card is 1, a BowTie diagram with 5 arms is 7, a
 medication table with 4 columns is 6.
+
+zone_allocation: assign EVERY distinct on-screen element to a named zone from this list:
+  TITLE        — top banner: scene title, chapter heading
+  SUBTITLE     — second row: equation header, subtitle
+  MAIN         — primary content: central diagram, proof, animation (rows 1–4, left 4 cols)
+  UPPER_MAIN   — upper half of main: first half of a two-part layout
+  LOWER_MAIN   — lower half of main: second half, answer reveal, detail
+  SIDEBAR      — right sidebar: callout, legend, annotation (rows 1–4, right 2 cols)
+  UPPER_SIDEBAR— upper sidebar: primary callout or highlighted fact
+  LOWER_SIDEBAR— lower sidebar: secondary callout or follow-up note
+  UPPER_LEFT   — upper-left quadrant: first panel in a 2×2 layout
+  UPPER_RIGHT  — upper-right quadrant: second panel in a 2×2 layout
+  LOWER_LEFT   — lower-left quadrant: third panel in 2×2
+  LOWER_RIGHT  — lower-right quadrant: fourth panel in 2×2
+  CENTER       — absolute canvas centre: isolated focus element
+  FOOTER       — bottom banner: exam tip, recap line, citation
+
+ZONE ALLOCATION RULES:
+- Every key in zone_allocation must be a short snake_case label describing what the element IS
+  (e.g. "formula", "step_counter", "priority_badge") — NOT a zone name
+- No two elements may share the same zone. If you have more elements than zones,
+  reduce element_count by grouping related elements into one composite element.
+- TEXT_ANIMATION scenes: use only TITLE + optional SUBTITLE + optional FOOTER (max 3 zones)
+- MANIM scenes: prefer TITLE + MAIN combination as the baseline; add SIDEBAR for secondary info
+- A scene_title element MUST always occupy TITLE zone — every scene
 
 For visual_prompt:
 - MANIM: Describe exactly what Manim objects/animations to create. Reference specific Manim classes.
@@ -188,9 +219,13 @@ class VisualDirector(BaseAgent):
             scene.needs_labels      = d.get("needs_labels", False)
             scene.label_list        = d.get("label_list", [])
             scene.element_count     = int(d.get("element_count", 0))
+            scene.zone_allocation   = d.get("zone_allocation", {})
 
             self._log(
-                f"Scene {scene.id}: {scene.visual_strategy.value} — {scene.visual_reasoning[:80]}"
+                f"Scene {scene.id}: {scene.visual_strategy.value} | "
+                f"elements={scene.element_count} | "
+                f"zones={list(scene.zone_allocation.values())} | "
+                f"{scene.visual_reasoning[:60]}"
             )
 
         # Strategy summary

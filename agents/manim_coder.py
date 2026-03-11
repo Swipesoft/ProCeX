@@ -152,6 +152,42 @@ def _build_coder_prompt(
     manim_elements  = skill.get("manim_elements", [])
     domain_decoder  = skill.get("notation_decoder", "")
 
+    # ── Build binding zone contract ───────────────────────────────────────────
+    zone_contract_section = ""
+    if scene.zone_allocation:
+        from utils.spatial_grid import ZONES, zone_to_manim_position
+        contract_lines = []
+        for element_label, zone_name in scene.zone_allocation.items():
+            zone = ZONES.get(zone_name)
+            if not zone:
+                continue
+            x, y = zone.manim_center
+            contract_lines.append(
+                f"  {element_label:<22} → {zone_name:<16} → "
+                f".move_to(np.array([{x}, {y}, 0]))"
+                f"  # {zone.description}"
+            )
+        if contract_lines:
+            zone_contract_section = (
+                "\n╔══════════════════════════════════════════════════════════════╗\n"
+                "║  BINDING ZONE CONTRACT — NOT ADVISORY, THIS IS A HARD RULE  ║\n"
+                "╚══════════════════════════════════════════════════════════════╝\n"
+                "Every element below MUST be placed at its assigned zone using .move_to().\n"
+                "Placing an element outside its allocated zone is a layout violation.\n"
+                "No two elements may share the same zone.\n\n"
+                "  ELEMENT                → ZONE             → MANIM POSITION\n"
+                "  " + "─" * 72 + "\n"
+                + "\n".join(contract_lines)
+                + "\n\n"
+                "ENFORCEMENT:\n"
+                "- Use the exact .move_to(np.array([x, y, 0])) shown above\n"
+                "- Do NOT use .to_corner(), .to_edge(), or .shift() as the primary\n"
+                "  positioning call for these elements — those bypass the contract\n"
+                "- If the element is inside a VGroup, call .move_to() on the VGroup\n"
+                "- The contract defines peak-density positions; elements may animate\n"
+                "  IN from off-screen, but must LAND at their contracted coordinate\n"
+            )
+
     # Extract anchors from this scene's word timestamps
     anchors = extract_animation_anchors(
         timestamps    = scene.timestamps,
@@ -200,6 +236,7 @@ NARRATION (what the narrator says — this is the audio track):
 VISUAL BRIEF (what to animate):
 {scene.visual_prompt}
 
+{zone_contract_section}
 {anchor_block}
 {domain_decoder_section}
 DOMAIN ELEMENTS AVAILABLE:

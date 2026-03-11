@@ -83,6 +83,11 @@ class Scene:
     element_count:       int  = 0      # set by VisualDirector; used to gate critic
     _split_recommended:  bool = False  # set by VLMCritic; handled by orchestrator
 
+    # Zone allocation — binding layout contract set by VisualDirector
+    # Maps element label → zone name, e.g. {"scene_title": "TITLE", "formula": "MAIN"}
+    # ManimCoder treats this as a hard positional contract, not a suggestion.
+    zone_allocation:     dict = field(default_factory=dict)
+
 
 # ─────────────────────────────────────────────
 # Pipeline State

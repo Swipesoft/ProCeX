@@ -56,11 +56,11 @@ from utils.spatial_grid import (
 
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
-CRITIC_DENSITY_THRESHOLD = 2  # element count >= this triggers critic
+CRITIC_DENSITY_THRESHOLD = 5   # element count >= this triggers critic (was 3)
 CRITIC_MAX_PATCHES       = 5   # max correction actions per scene
 PATCH_MAX_TOKENS         = 4096
-VISION_MAX_TOKENS        =
-KEYFRAME_OFFSET_PCT      = 0.50  # extract frame at 50% of clip duration
+VISION_MAX_TOKENS        = 4096
+KEYFRAME_OFFSETS         = [0.25, 0.50, 0.75]  # sample at 25%, 50%, 75% of clip
 
 
 # ── Result dataclass ──────────────────────────────────────────────────────────
@@ -230,23 +230,25 @@ class VLMCritic(BaseAgent):
             return CriticResult(status="ok", reason="no Manim code to patch")
 
         # ── Extract keyframe ──────────────────────────────────────────────────
-        self._log(f"Scene {scene.id}: extracting keyframe at {KEYFRAME_OFFSET_PCT*100:.0f}% of clip")
-        frame_bytes = self._extract_keyframe(clip_path)
-        if not frame_bytes:
+        self._log(f"Scene {scene.id}: extracting keyframes at {[int(o*100) for o in KEYFRAME_OFFSETS]}% of clip")
+        frames = self._extract_keyframes(clip_path)
+        if not frames:
             self._log(f"Scene {scene.id}: keyframe extraction failed — skipping critic")
             return CriticResult(status="ok", reason="keyframe extraction failed")
 
-        # ── Annotate frame with grid overlay ─────────────────────────────────
-        try:
-            annotated = draw_grid_overlay(frame_bytes)
-            self._log(f"Scene {scene.id}: grid overlay applied")
-        except Exception as e:
-            self._log(f"Scene {scene.id}: grid overlay failed ({e}) — using raw frame")
-            annotated = frame_bytes
+        # ── Annotate frames with grid overlay ────────────────────────────────
+        annotated_frames = []
+        for fb in frames:
+            try:
+                annotated_frames.append(draw_grid_overlay(fb))
+            except Exception as e:
+                self._log(f"Scene {scene.id}: grid overlay failed ({e}) — using raw frame")
+                annotated_frames.append(fb)
+        self._log(f"Scene {scene.id}: grid overlay applied to {len(annotated_frames)} frame(s)")
 
-        # ── Stage 1: Gemini sees the visual problem ───────────────────────────
-        self._log(f"Scene {scene.id}: [stage 1] sending frame to Gemini vision...")
-        vision_result = self._run_vision_analysis(annotated, scene)
+        # ── Stage 1: Gemini inspects all frames, worst result wins ───────────
+        self._log(f"Scene {scene.id}: [stage 1] sending {len(annotated_frames)} frame(s) to Gemini vision...")
+        vision_result = self._run_vision_analysis_multi(annotated_frames, scene)
         if vision_result is None:
             self._log(f"Scene {scene.id}: vision analysis failed gracefully — passing")
             return CriticResult(status="ok", reason="vision analysis failed gracefully")
@@ -349,61 +351,81 @@ class VLMCritic(BaseAgent):
 
     # ── Keyframe extraction ───────────────────────────────────────────────────
 
-    def _extract_keyframe(self, clip_path: str) -> Optional[bytes]:
+    def _extract_keyframes(self, clip_path: str) -> list[bytes]:
         """
-        Use ffmpeg to extract a single frame at KEYFRAME_OFFSET_PCT of clip duration.
-        Returns JPEG bytes or None on failure.
+        Extract frames at each KEYFRAME_OFFSETS percentage of clip duration.
+        Returns list of JPEG byte strings; empty list on total failure.
         """
         if not os.path.exists(clip_path):
-            return None
+            return []
 
-        # Get duration
+        # Get duration once
         try:
             probe = subprocess.run(
-                [
-                    "ffprobe", "-v", "quiet",
-                    "-show_entries", "format=duration",
-                    "-of", "csv=p=0",
-                    clip_path,
-                ],
+                ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+                 "-of", "csv=p=0", clip_path],
                 capture_output=True, text=True, timeout=15,
             )
             duration = float(probe.stdout.strip() or "5")
         except Exception:
             duration = 5.0
 
-        seek_time = max(0.5, duration * KEYFRAME_OFFSET_PCT)
-
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-            tmp_path = tmp.name
-
-        try:
-            result = subprocess.run(
-                [
-                    "ffmpeg", "-y",
-                    "-ss", str(seek_time),
-                    "-i", clip_path,
-                    "-vframes", "1",
-                    "-q:v", "3",
-                    tmp_path,
-                ],
-                capture_output=True, text=True, timeout=20,
-            )
-            if result.returncode != 0 or not os.path.exists(tmp_path):
-                return None
-
-            with open(tmp_path, "rb") as f:
-                return f.read()
-        except Exception as e:
-            self._log(f"Scene keyframe extraction error: {e}")
-            return None
-        finally:
+        frames = []
+        for offset in KEYFRAME_OFFSETS:
+            seek_time = max(0.1, duration * offset)
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                tmp_path = tmp.name
             try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
+                result = subprocess.run(
+                    ["ffmpeg", "-y", "-ss", str(seek_time), "-i", clip_path,
+                     "-vframes", "1", "-q:v", "3", tmp_path],
+                    capture_output=True, text=True, timeout=20,
+                )
+                if result.returncode == 0 and os.path.exists(tmp_path):
+                    with open(tmp_path, "rb") as f:
+                        frames.append(f.read())
+            except Exception as e:
+                self._log(f"Keyframe extraction error at {offset*100:.0f}%: {e}")
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+
+        return frames
 
     # ── Vision analysis (Gemini) ──────────────────────────────────────────────
+
+    def _run_vision_analysis_multi(
+        self, frames: list[bytes], scene: Scene
+    ) -> Optional[dict]:
+        """
+        Run vision analysis on each frame; return the worst result
+        (highest density_score / any collision detected).
+        'Worst wins' — a collision at any point in the animation counts.
+        """
+        results = []
+        for i, frame in enumerate(frames):
+            r = self._run_vision_analysis(frame, scene)
+            if r is not None:
+                results.append((i, r))
+
+        if not results:
+            return None
+
+        # If any frame has a collision, return the one with highest density score
+        collisions = [(i, r) for i, r in results if r.get("collision_detected", False)]
+        if collisions:
+            worst = max(collisions, key=lambda x: x[1].get("density_score", 0))
+            self._log(
+                f"Scene {scene.id}: collision found in frame {worst[0]+1}/{len(frames)} "
+                f"(density={worst[1].get('density_score','?')}/10)"
+            )
+            return worst[1]
+
+        # All frames clean — return the midpoint result
+        mid = results[len(results) // 2]
+        return mid[1]
 
     def _run_vision_analysis(self, frame_bytes: bytes, scene: Scene) -> Optional[dict]:
         """
