@@ -41,8 +41,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from agents.base_agent import BaseAgent
 from config import ProcExConfig
-from state import Scene, VisualStrategy
+from state import ProcExState, Scene, VisualStrategy
 from utils.llm_client import LLMClient
 from utils.spatial_grid import (
     ZONES,
@@ -55,10 +56,10 @@ from utils.spatial_grid import (
 
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
-CRITIC_DENSITY_THRESHOLD = 2   # element count >= this triggers critic
+CRITIC_DENSITY_THRESHOLD = 2  # element count >= this triggers critic
 CRITIC_MAX_PATCHES       = 5   # max correction actions per scene
 PATCH_MAX_TOKENS         = 4096
-VISION_MAX_TOKENS        = 4096
+VISION_MAX_TOKENS        =
 KEYFRAME_OFFSET_PCT      = 0.50  # extract frame at 50% of clip duration
 
 
@@ -176,15 +177,18 @@ Apply all corrections and return the complete corrected Python code.
 """
 
 
-class VLMCritic:
+class VLMCritic(BaseAgent):
     """
     Inspect a rendered scene clip for spatial collisions and return a
     CriticResult with either a patched Manim code string or a split flag.
+    Called via inspect(), not run() — run() is a guard.
     """
+    name = "VLMCritic"
 
-    def __init__(self, cfg: ProcExConfig, llm: LLMClient):
-        self.cfg = cfg
-        self.llm = llm
+    def run(self, state: ProcExState) -> ProcExState:
+        raise NotImplementedError(
+            "VLMCritic is called via inspect(clip_path, scene, manim_code), not run(state)."
+        )
 
     # ── Public interface ──────────────────────────────────────────────────────
 
@@ -205,34 +209,61 @@ class VLMCritic:
         """
         # ── Gate: skip cheap/simple scenes ───────────────────────────────────
         if not self._should_inspect(scene):
+            self._log(
+                f"Scene {scene.id}: skipped "
+                f"(strategy={scene.visual_strategy.value}, "
+                f"elements={getattr(scene, 'element_count', 0)}, "
+                f"threshold={CRITIC_DENSITY_THRESHOLD})"
+            )
             return CriticResult(status="ok", reason="below density threshold")
+
+        self._log(
+            f"Scene {scene.id}: inspecting "
+            f"(strategy={scene.visual_strategy.value}, "
+            f"elements={getattr(scene, 'element_count', 0)})"
+        )
 
         # ── Load code ─────────────────────────────────────────────────────────
         code = manim_code or self._load_code(scene)
         if not code:
+            self._log(f"Scene {scene.id}: no Manim code found — skipping")
             return CriticResult(status="ok", reason="no Manim code to patch")
 
         # ── Extract keyframe ──────────────────────────────────────────────────
+        self._log(f"Scene {scene.id}: extracting keyframe at {KEYFRAME_OFFSET_PCT*100:.0f}% of clip")
         frame_bytes = self._extract_keyframe(clip_path)
         if not frame_bytes:
+            self._log(f"Scene {scene.id}: keyframe extraction failed — skipping critic")
             return CriticResult(status="ok", reason="keyframe extraction failed")
 
         # ── Annotate frame with grid overlay ─────────────────────────────────
         try:
             annotated = draw_grid_overlay(frame_bytes)
+            self._log(f"Scene {scene.id}: grid overlay applied")
         except Exception as e:
-            print(f"[VLMCritic] Grid overlay failed: {e} — using raw frame")
+            self._log(f"Scene {scene.id}: grid overlay failed ({e}) — using raw frame")
             annotated = frame_bytes
 
         # ── Stage 1: Gemini sees the visual problem ───────────────────────────
+        self._log(f"Scene {scene.id}: [stage 1] sending frame to Gemini vision...")
         vision_result = self._run_vision_analysis(annotated, scene)
         if vision_result is None:
+            self._log(f"Scene {scene.id}: vision analysis failed gracefully — passing")
             return CriticResult(status="ok", reason="vision analysis failed gracefully")
 
-        if not vision_result.get("collision_detected", False):
+        density = vision_result.get("density_score", "?")
+        reasoning = vision_result.get("reasoning", "")
+        collision = vision_result.get("collision_detected", False)
+        self._log(
+            f"Scene {scene.id}: Gemini result — "
+            f"collision={collision}, density={density}/10, reason='{reasoning}'"
+        )
+
+        if not collision:
+            self._log(f"Scene {scene.id}: no collisions detected — passing")
             return CriticResult(
                 status  = "ok",
-                reason  = vision_result.get("reasoning", "no collisions detected"),
+                reason  = reasoning or "no collisions detected",
             )
 
         issues = [
@@ -245,22 +276,28 @@ class VLMCritic:
             )
             for i in vision_result.get("issues", [])[:CRITIC_MAX_PATCHES]
         ]
+        self._log(
+            f"Scene {scene.id}: {len(issues)} issue(s) identified — "
+            + ", ".join(f"[{v.severity}] {v.element} {v.from_zone}→{v.to_zone}" for v in issues)
+        )
 
         # ── Split recommendation ──────────────────────────────────────────────
         if vision_result.get("split_recommended", False):
-            print(
-                f"[VLMCritic] Scene {scene.id}: split recommended — "
-                f"density={vision_result.get('density_score', '?')}/10"
+            self._log(
+                f"Scene {scene.id}: split recommended — "
+                f"density={density}/10, reason='{reasoning}'"
             )
             return CriticResult(
                 status  = "split_needed",
                 issues  = issues,
-                reason  = vision_result.get("reasoning", "density overflow"),
+                reason  = reasoning or "density overflow",
             )
 
         # ── Stage 2: Claude patches the code ─────────────────────────────────
+        self._log(f"Scene {scene.id}: [stage 2] sending {len(issues)} correction(s) to Claude patcher...")
         patched = self._run_code_patch(code, issues, scene)
         if not patched or patched == code:
+            self._log(f"Scene {scene.id}: patch produced no change — passing as-is")
             return CriticResult(
                 status  = "ok",
                 issues  = issues,
@@ -272,19 +309,19 @@ class VLMCritic:
             try:
                 with open(scene.manim_file_path, "w", encoding="utf-8") as f:
                     f.write(patched)
+                self._log(f"Scene {scene.id}: patched code written to {scene.manim_file_path}")
             except Exception as e:
-                print(f"[VLMCritic] Could not write patched code: {e}")
+                self._log(f"Scene {scene.id}: could not write patched code — {e}")
                 return CriticResult(status="ok", reason=f"file write failed: {e}")
 
-        print(
-            f"[VLMCritic] Scene {scene.id}: {len(issues)} collision(s) patched "
-            f"→ queued for re-render"
+        self._log(
+            f"Scene {scene.id}: {len(issues)} collision(s) patched → queued for re-render"
         )
         return CriticResult(
             status       = "patched",
             issues       = issues,
             patched_code = patched,
-            reason       = vision_result.get("reasoning", "collisions corrected"),
+            reason       = reasoning or "collisions corrected",
         )
 
     # ── Gate ──────────────────────────────────────────────────────────────────
@@ -358,7 +395,7 @@ class VLMCritic:
             with open(tmp_path, "rb") as f:
                 return f.read()
         except Exception as e:
-            print(f"[VLMCritic] Keyframe extraction error: {e}")
+            self._log(f"Scene keyframe extraction error: {e}")
             return None
         finally:
             try:
@@ -395,10 +432,10 @@ class VLMCritic:
             return json.loads(raw.strip())
 
         except json.JSONDecodeError as e:
-            print(f"[VLMCritic] Vision JSON parse error: {e}")
+            self._log(f"Vision JSON parse error: {e}")
             return None
         except Exception as e:
-            print(f"[VLMCritic] Vision analysis error: {e}")
+            self._log(f"Vision analysis error: {e}")
             return None
 
     # ── Code patching (Claude) ────────────────────────────────────────────────
@@ -446,7 +483,7 @@ class VLMCritic:
             return patched.strip()
 
         except Exception as e:
-            print(f"[VLMCritic] Code patch error: {e}")
+            self._log(f"Code patch error: {e}")
             return None
 
     # ── Load code from disk ───────────────────────────────────────────────────
