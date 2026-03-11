@@ -33,3 +33,115 @@ manim_elements:
 timing_guidance: |
   For code walkthroughs: highlight one line per narration beat.
   For algorithm steps: advance visualization when narrator says each step.
+
+notation_decoder: |
+  ── MATHEMATICAL EXPRESSIONS IN CS ──
+  Narration describes math in plain English. Decode to canonical LaTeX with MathTex.
+    "limit as n approaches infinity"       →  MathTex: r"\lim_{n \to \infty}"
+    "sum / summation over all elements"   →  MathTex: r"\sum_{i=1}^{n}"
+    "product over all"                    →  MathTex: r"\prod_{i=1}^{n}"
+    "approximately equal"                 →  MathTex: r"\approx"
+    "defined as / equals by definition"  →  MathTex: r"\triangleq"
+    "log base two / binary log"           →  MathTex: r"\log_2 n"
+    "natural log"                         →  MathTex: r"\ln n"
+    "floor / ceiling"                     →  MathTex: r"\lfloor x \rfloor" / r"\lceil x \rceil"
+    "derivative / rate of change"         →  MathTex: r"\frac{d}{dx}f(x)"  (for continuous analysis)
+    "partial derivative"                  →  MathTex: r"\frac{\partial f}{\partial x}"
+    "probability of event"                →  MathTex: r"P(A)"
+    "expected value"                      →  MathTex: r"\mathbb{E}[X]"
+
+  ── RENDERING RULES ──
+  R1. Always MathTex(r"..."), never Text() for any mathematical expression.
+  R2. Scale complex expressions: .scale(0.85) for fractions, .scale(0.75) for long ones.
+  R3. Progressive reveal — show plain-English label first, then Transform() to notation:
+        label = Text("O(n log n)", color=CYAN, font_size=36)
+        tex   = MathTex(r"\mathcal{O}(n \log n)", color=CYAN).scale(0.9)
+        self.play(Write(label))
+        self.wait(0.8)
+        self.play(Transform(label, tex))
+
+  ── COMPLEXITY NOTATION ──
+  Always use MathTex for Big-O. Render as a complexity ladder when comparing multiple.
+    "constant time"                    → MathTex: r"\mathcal{O}(1)"
+    "logarithmic time / binary search" → MathTex: r"\mathcal{O}(\log n)"
+    "linear time"                      → MathTex: r"\mathcal{O}(n)"
+    "linearithmic / merge sort"        → MathTex: r"\mathcal{O}(n \log n)"
+    "quadratic / nested loops"         → MathTex: r"\mathcal{O}(n^2)"
+    "cubic"                            → MathTex: r"\mathcal{O}(n^3)"
+    "exponential / brute force"        → MathTex: r"\mathcal{O}(2^n)"
+    "factorial / TSP brute force"      → MathTex: r"\mathcal{O}(n!)"
+    "amortized cost per operation"     → MathTex: r"\hat{c} = \frac{\text{total cost}}{n\text{ ops}}"
+    Complexity ladder: staircase or FunctionGraph showing growth curves labelled per class.
+
+  ── DATA STRUCTURE NOTATION ──
+    "linked list node"
+      → Rectangle(width=3): left half = [data], right half = [next →]
+      Chain multiple nodes with Arrow; last node's next = NULL label
+    "binary search tree property"
+      → annotate tree: "left < root" on left subtree, "right > root" on right subtree
+    "hash table / hash map"
+      → MathTex: r"h(k) = k \bmod m" above a bucket array diagram
+    "graph"
+      → MathTex: r"G = (V,\, E)" + node-edge diagram (Circle + Line)
+    "directed acyclic graph / DAG"
+      → label edges with weights if weighted; show topological ordering if relevant
+    "min-heap property"
+      → annotate: "parent ≤ children" on each parent-child pair
+    "stack / LIFO"
+      → vertical stack of Rectangle cells; TOP label with arrow; push/pop arrows
+    "queue / FIFO"
+      → horizontal Rectangle cells; ENQUEUE on right, DEQUEUE on left with arrows
+
+  ── ALGORITHM ANALYSIS ──
+    "recurrence relation"
+      → MathTex: r"T(n) = aT\!\left(\frac{n}{b}\right) + f(n)"  (Master theorem form)
+    "divide and conquer split"
+      → tree diagram: one T(n) splits into two T(n/2) branches + combine step
+    "loop invariant"
+      → annotation RoundedRectangle on code block:
+        "Invariant: [condition holds at start of each iteration]"
+    "best / worst / average case"
+      → 3-column table: Best | Average | Worst with MathTex for each
+    "amortized analysis / potential method"
+      → MathTex: r"\hat{c}_i = c_i + \Phi(D_i) - \Phi(D_{i-1})"
+
+  ── NETWORK & PROTOCOL NOTATION ──
+    "client sends request / server responds"
+      → sequence diagram with labeled horizontal arrows:
+        Client ──[HTTP Request]──→ Server
+        Server ──[HTTP Response]──→ Client
+    "TCP three-way handshake"
+      → three-arrow sequence: SYN → SYN-ACK → ACK (label each arrow)
+    "IP address"   → Text in monospace format: "192.168.0.1 / 24"
+    "OSI model"    → 7-layer stack (Application → Presentation → ... → Physical)
+                     Highlight the active layer in CYAN; others in DIM
+    "HTTP status"  → color convention: 2xx=GREEN, 3xx=CYAN, 4xx=ORANGE, 5xx=RED
+    "packet structure"
+      → segmented Rectangle: [Header | Payload | Trailer], each part labelled
+
+  ── CODE ANNOTATION RULES ──
+  Always use Code() Manim object for code blocks — never Text() for multi-line code.
+    "active / highlighted line"
+      → overlay a Rectangle(color=CYAN, fill_opacity=0.15, stroke_width=0) on that line
+    "pointer / reference"
+      → dashed Arrow from variable Rectangle to target Rectangle
+    "variable state"
+      → small Rectangle per variable with label above and value inside;
+        update value with Transform() as algorithm steps through
+    "pseudocode step"
+      → monospace styling, indent with spaces, step numbers in DIM color left margin
+    "call stack"
+      → vertical stack of RoundedRectangle frames; push on call, pop on return
+
+  ── SYSTEM ARCHITECTURE NOTATION ──
+    "microservices"      → separate Rectangle boxes connected by Arrow with protocol label
+    "load balancer"      → one Rectangle fanning out to N service Rectangles (VGroup)
+    "database"           → cylinder shape (Ellipse + Rectangle + Ellipse) labelled DB
+    "cache layer"        → Rectangle with "CACHE" label, bolt/lightning icon (Text: ⚡)
+    "message queue"      → horizontal queue of small Rectangles (FIFO visual)
+    "API gateway"        → Rectangle at boundary between client and internal services
+
+  RENDERING RULE: Cyan (#00D4FF) = data structures and primary objects.
+  Purple (#7B2FFF) = pointers, references, memory addresses.
+  Green (#00FF88) = correct path / success state. Orange (#FF6B35) = error / collision.
+  Code blocks always use Code() with dark theme. Complexity always MathTex, never Text.

@@ -73,10 +73,17 @@ OUTPUT FORMAT: Return ONLY valid JSON array — no fences, no prose.
     "visual_reasoning": "This scene explains insulin resistance as a mechanism — Manim flowchart is ideal",
     "visual_prompt": "Detailed, precise prompt for the ManimCoder or ImageGenAgent...",
     "needs_labels": false,
-    "label_list": []
+    "label_list": [],
+    "element_count": 4
   },
   ...
 ]
+
+element_count: estimate the number of distinct visual elements (boxes, labels, icons,
+arrows, text blocks) that will appear on screen simultaneously at peak density.
+This is used by the layout critic to decide whether to inspect the rendered scene.
+Be realistic — a simple title card is 1, a BowTie diagram with 5 arms is 7, a
+medication table with 4 columns is 6.
 
 For visual_prompt:
 - MANIM: Describe exactly what Manim objects/animations to create. Reference specific Manim classes.
@@ -180,6 +187,7 @@ class VisualDirector(BaseAgent):
             scene.visual_prompt     = d.get("visual_prompt", "")
             scene.needs_labels      = d.get("needs_labels", False)
             scene.label_list        = d.get("label_list", [])
+            scene.element_count     = int(d.get("element_count", 0))
 
             self._log(
                 f"Scene {scene.id}: {scene.visual_strategy.value} — {scene.visual_reasoning[:80]}"
@@ -191,4 +199,3 @@ class VisualDirector(BaseAgent):
         self._log(f"Strategy distribution: {dict(counts)}")
 
         return state
-

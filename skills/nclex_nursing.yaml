@@ -48,3 +48,89 @@ timing_guidance: |
   Build clinical reasoning step by step — each ADPIE step appears on narration beat.
   For medication scenarios: name appears first, then MOA, then nursing implications.
   Total must match duration_seconds. Use self.wait() for processing pauses.
+
+notation_decoder: |
+  ── PRIORITY FRAMEWORKS ──
+  "airway, breathing, circulation / ABC"
+    → vertical stack: [AIRWAY] → [BREATHING] → [CIRCULATION]
+    Each box gets a GOLD "PRIORITY" badge. Render top-to-bottom always.
+  "ADPIE / nursing process"
+    → 5-box horizontal flowchart:
+      [Assess] → [Diagnose] → [Plan] → [Implement] → [Evaluate]
+    Highlight active step in CYAN; completed steps in GREEN; future in DIM.
+  "Maslow's hierarchy of needs"
+    → 5-tier pyramid (bottom = most basic):
+      [Physiological] | [Safety] | [Love & Belonging] | [Esteem] | [Self-Actualization]
+    Highlight the active tier in CYAN; upper unmet tiers in DIM.
+  "who do you see first / priority patient" → gold PRIORITY badge on that item
+  "safety / safety risk"                   → orange SAFETY badge on that item
+  "delegation"
+    → 5-Rights layout: Right Task | Right Person | Right Communication |
+                        Right Direction | Right Supervision
+
+  ── CRITICAL LAB VALUES WITH NURSING ACTION ──
+  Render as two-row card: [Critical Value — RED] ↓ [Nursing Action — GOLD]
+    Na⁺ < 120 mEq/L          → SEIZURE RISK → seizure precautions, notify HCP
+    K⁺ > 6.5 mEq/L           → CARDIAC ARREST RISK → 12-lead ECG, notify HCP immediately
+    BG < 70 mg/dL             → hypoglycemia → 15 g fast carbs, recheck in 15 min
+    Hgb < 7 g/dL              → likely transfusion threshold → type & screen
+    INR > 4                   → bleeding risk → hold anticoagulant, notify HCP
+    SpO₂ < 90%                → hypoxemia → elevate HOB, supplement O₂, notify HCP
+    pH < 7.20 or > 7.60       → life-threatening acid-base emergency → ICU notify
+
+  ── NCLEX QUESTION FORMAT LAYOUTS ──
+  "BowTie question"
+    → 5-box layout (use RoundedRectangle + arrows):
+      [Condition] ← [Nursing Actions] ← [CENTER: Priority Nursing Action] → [Nursing Actions] → [Parameters to Monitor]
+    Centre box in GOLD; outer boxes in CYAN.
+  "Select All That Apply / SATA"
+    → checkbox grid; correct answers highlighted in CYAN with ✓; distractors in DIM
+  "Matrix Multiple Response"
+    → grid: rows = conditions/findings, cols = nursing actions; cell = ✓ or ✗
+    Correct cells animate to CYAN; incorrect to DIM
+  "Drop-Down Cloze"
+    → sentence with underlined blank in GOLD + dropdown options shown below in a list
+  "Extended Drag-and-Drop"
+    → source list (LEFT, DIM) with arrows pointing to target slots (RIGHT, CYAN)
+
+  ── MEDICATION CARD LAYOUT ──
+  Always render drug information as a styled RoundedRectangle card.
+  Animate each row with Write() on the narration beat that mentions it.
+    ┌──────────────────────────────────┐
+    │ DRUG NAME (generic / trade)      │  ← WHITE, font_size=32
+    │ Class: _____                     │  ← CYAN
+    │ MOA: _____                       │  ← WHITE, font_size=26
+    │ ★ Nursing Priority: _____        │  ← GOLD for the must-know nursing point
+    │ Onset | Peak | Duration          │  ← 3-column mini-table, font_size=22
+    └──────────────────────────────────┘
+
+  ── CLINICAL SCORING SYSTEMS ──
+  "Glasgow Coma Scale / GCS"
+    → MathTex: r"GCS = E_{(4)} + V_{(5)} + M_{(6)} = 3\text{–}15"
+    Severity table: Mild ≥ 13 | Moderate 9–12 | Severe ≤ 8 | Intubation threshold ≤ 8
+  "APGAR score"
+    → 5-item table: Appearance | Pulse | Grimace | Activity | Respiration, 0–2 each
+    Score bar: 0–3 = resuscitation needed | 4–6 = guarded | 7–10 = normal
+  "pain scale / NRS"
+    → horizontal number line 0–10, color gradient green → yellow → red
+  "NIHSS / stroke scale"
+    → 11-item checklist; total score → severity label (minor / moderate / severe)
+
+  ── THERAPEUTIC COMMUNICATION ──
+  "therapeutic communication"
+    → two-column layout:
+      DO: open-ended questions, reflection, validation, silence
+      DON'T: false reassurance, changing the subject, asking "why", giving advice
+  "SBAR handoff"
+    → 4-box vertical: [Situation] → [Background] → [Assessment] → [Recommendation]
+
+  ── INFECTION CONTROL ──
+  "standard precautions"   → PPE icons: gloves, gown, mask (Text labels in boxes)
+  "contact precautions"    → ORANGE badge: "CONTACT" + gloves + gown
+  "droplet precautions"    → BLUE badge: "DROPLET" + surgical mask
+  "airborne precautions"   → RED badge: "AIRBORNE" + N95 + negative pressure room
+  "hand hygiene / 5 moments" → 5-moment numbered list with arrows
+
+  RENDERING RULE: Gold (#FFD700) = PRIORITY items. Orange (#FF6B35) = SAFETY/risk.
+  Red (#FF3B30) = critical values, life-threatening. Cyan = normal/therapeutic.
+  Green (#00FF88) = correct nursing action, improvement. DIM = incorrect/distractor.

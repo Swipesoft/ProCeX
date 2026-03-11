@@ -111,6 +111,111 @@ class LLMClient:
         )
         return json.loads(raw)
 
+    def complete_vision(
+        self,
+        system_prompt:    str,
+        user_prompt:      str,
+        image_bytes:      bytes,
+        *,
+        image_mime:       str           = "image/png",
+        max_tokens:       int           = 2048,
+        temperature:      float         = 0.1,
+        primary_provider: Optional[str] = None,
+    ) -> str:
+        """
+        Vision-capable completion: sends an image + text to a multimodal model.
+        Provider preference: Gemini first (best spatial VLM), then Claude fallback.
+        OpenAI is skipped unless it's the only option — gpt-5 vision costs are high.
+
+        primary_provider: override to "claude" or "gemini" explicitly.
+        image_bytes: raw PNG/JPEG bytes of the frame.
+        """
+        # Vision-capable providers in preferred order
+        preferred = primary_provider or "gemini"
+        vision_chain = self._build_provider_chain(
+            primary_provider=preferred,
+            model_override=None,
+        )
+        # Remove openai from vision chain (no vision support in current client)
+        vision_chain = [(n, fn) for n, fn in vision_chain if n != "openai"]
+        if not vision_chain:
+            raise RuntimeError("No vision-capable providers available.")
+
+        # Build provider-specific vision callers
+        vision_callers = {
+            "gemini": lambda s, u, mt, temp: self._call_gemini_vision(
+                s, u, image_bytes, image_mime, mt, temp
+            ),
+            "claude": lambda s, u, mt, temp: self._call_claude_vision(
+                s, u, image_bytes, image_mime, mt, temp
+            ),
+        }
+
+        last_error = None
+        for provider_name, _ in vision_chain:
+            caller = vision_callers.get(provider_name)
+            if caller is None:
+                continue
+            try:
+                return caller(system_prompt, user_prompt, max_tokens, temperature)
+            except Exception as e:
+                last_error = e
+                print(f"[LLMClient] {provider_name} vision failed: {e} — trying next...")
+                time.sleep(1)
+
+        raise RuntimeError(f"All vision providers failed. Last error: {last_error}")
+
+    # ── Vision: Gemini ────────────────────────────────────────────────────────
+
+    def _call_gemini_vision(self, system, user, image_bytes, mime, max_tokens, temperature):
+        from google.genai import types
+        import base64 as _b64
+
+        model = self.cfg.gemini_text_model   # e.g. gemini-3-flash-preview
+
+        # Build multimodal contents: image part + text part
+        image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime)
+        text_part  = types.Part.from_text(text=user)
+
+        response = self._genai.models.generate_content(
+            model    = model,
+            contents = types.Content(parts=[image_part, text_part], role="user"),
+            config   = types.GenerateContentConfig(
+                system_instruction = system,
+                max_output_tokens  = max_tokens,
+                temperature        = temperature,
+            ),
+        )
+        return response.text
+
+    # ── Vision: Claude ────────────────────────────────────────────────────────
+
+    def _call_claude_vision(self, system, user, image_bytes, mime, max_tokens, temperature):
+        import base64 as _b64
+        b64_data = _b64.b64encode(image_bytes).decode("utf-8")
+
+        response = self._anthropic.messages.create(
+            model      = self.cfg.claude_model,
+            max_tokens = max_tokens,
+            temperature= temperature,
+            system     = system,
+            messages   = [{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type":       "base64",
+                            "media_type": mime,
+                            "data":       b64_data,
+                        },
+                    },
+                    {"type": "text", "text": user},
+                ],
+            }],
+        )
+        return response.content[0].text
+
     # ── Provider chain builder ────────────────────────────────────────────────
 
     def _build_provider_chain(

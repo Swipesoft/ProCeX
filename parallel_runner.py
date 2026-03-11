@@ -160,6 +160,7 @@ def run_generation_render_pipeline(
     from agents.manim_coder     import ManimCoder, _fallback_scene
     from agents.image_gen_agent import ImageGenAgent
     from agents.renderer        import RendererAgent, REGEN_RETRIES
+    from agents.vlm_critic      import VLMCritic
 
     manim_dir  = cfg.dirs["manim"]
     scenes_dir = cfg.dirs["scenes"]
@@ -170,6 +171,7 @@ def run_generation_render_pipeline(
     coder    = ManimCoder(cfg, llm)
     imager   = ImageGenAgent(cfg, llm)
     renderer = RendererAgent(cfg, llm)
+    critic   = VLMCritic(cfg, llm)
 
     # Classify scenes by their initial strategy
     manim_scenes  = [s for s in state.scenes if s.visual_strategy in
@@ -316,7 +318,9 @@ def run_generation_render_pipeline(
             scene = task.scene
             log(f"Renderer-{wid}: Scene {scene.id} rendering (attempt {task.attempt+1})...")
 
-            clip_path, error = renderer.render_scene_once(scene, state.resolution, scenes_dir)
+            clip_path, error = renderer.render_with_critic(
+                scene, state.resolution, scenes_dir, critic=critic
+            )
 
             if clip_path:
                 log(f"Renderer-{wid}: Scene {scene.id} ✓")

@@ -149,7 +149,8 @@ def _build_coder_prompt(
       - Pre-computed timing skeleton (copy self.wait() values verbatim)
       - Domain elements available
     """
-    manim_elements = skill.get("manim_elements", [])
+    manim_elements  = skill.get("manim_elements", [])
+    domain_decoder  = skill.get("notation_decoder", "")
 
     # Extract anchors from this scene's word timestamps
     anchors = extract_animation_anchors(
@@ -174,6 +175,19 @@ PREVIOUS ATTEMPT FAILED — READ AND FIX THIS ERROR:
 Fix the error above. Do NOT change the self.wait() values — those are correct.
 """
 
+    domain_decoder_section = ""
+    if domain_decoder:
+        domain_decoder_section = f"""
+═══════════════════════════════════════════════════════════════════════
+DOMAIN NOTATION DECODER  (supplements the universal math decoder above)
+═══════════════════════════════════════════════════════════════════════
+The same principle applies here: narration uses plain spoken English.
+Your job is to decode it into the canonical visual form for this domain.
+
+{domain_decoder}
+═══════════════════════════════════════════════════════════════════════
+"""
+
     return f"""Generate Manim code for this scene.
 {error_block}
 scene_class_name: {scene.manim_class_name}
@@ -187,7 +201,7 @@ VISUAL BRIEF (what to animate):
 {scene.visual_prompt}
 
 {anchor_block}
-
+{domain_decoder_section}
 DOMAIN ELEMENTS AVAILABLE:
 {chr(10).join(f"  - {e}" for e in manim_elements)}
 
@@ -370,4 +384,3 @@ class ManimCoder(BaseAgent):
         parts.append("\nFull traceback (last portion):")
         parts.append(error[-600:])
         return "\n".join(parts)
-

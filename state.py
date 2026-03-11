@@ -79,6 +79,10 @@ class Scene:
     render_attempts:    int = 0
     render_error:       Optional[str] = None
 
+    # VLM Critic fields
+    element_count:       int  = 0      # set by VisualDirector; used to gate critic
+    _split_recommended:  bool = False  # set by VLMCritic; handled by orchestrator
+
 
 # ─────────────────────────────────────────────
 # Pipeline State

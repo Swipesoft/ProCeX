@@ -38,3 +38,97 @@ timing_guidance: |
   A word spoken over 0.5s → the corresponding animation takes 0.5s.
   Use self.wait() between animations to let the narration breathe.
   Total scene animation time should match scene duration_seconds exactly.
+
+notation_decoder: |
+  THE ASYMMETRY YOU MUST UNDERSTAND
+  ----------------------------------
+  Narration is plain spoken English by design. "dot product of weights and input
+  plus bias" is how the ScriptWriter writes it. Your job is the reverse: decode
+  that into canonical LaTeX and render it with MathTex. Never render a formula
+  as Text(). When narration says "derivative of g with respect to x", the screen
+  shows MathTex(r"\frac{d}{dx}g(x)") — you infer the correct form from intent.
+
+  ── CALCULUS ──
+    "derivative of f with respect to x"     →  r"\frac{d}{dx}f(x)"
+    "derivative / rate of change"           →  r"\frac{dy}{dx}"
+    "partial derivative of f w.r.t. x"     →  r"\frac{\partial f}{\partial x}"
+    "gradient of f"                         →  r"\nabla f"
+    "gradient of the loss w.r.t. weights"  →  r"\nabla_{W}\mathcal{L}"
+    "directional derivative"               →  r"\nabla f \cdot \hat{u}"
+    "second derivative / curvature"        →  r"\frac{d^2f}{dx^2}"
+    "Laplacian"                            →  r"\nabla^2 f"
+    "integral of f over [a,b]"            →  r"\int_a^b f(x)\,dx"
+    "indefinite integral / antiderivative" →  r"\int f(x)\,dx"
+    "limit as x approaches value"          →  r"\lim_{x \to 0} f(x)"
+    "chain rule"                           →  r"\frac{d}{dx}f(g(x)) = f'(g(x))\cdot g'(x)"
+    "product rule"                         →  r"\frac{d}{dx}[uv] = u'v + uv'"
+    "Taylor / Maclaurin expansion"         →  r"f(x) = \sum_{n=0}^{\infty}\frac{f^{(n)}(a)}{n!}(x-a)^n"
+
+  ── LINEAR ALGEBRA ──
+    "dot product of a and b"               →  r"\mathbf{a} \cdot \mathbf{b}"
+    "matrix-vector product / affine transform / weight × input + bias"
+                                           →  r"\mathbf{W}\mathbf{x} + \mathbf{b}"
+    "transpose of W times x"              →  r"\mathbf{W}^T\mathbf{x}"
+    "inverse"                              →  r"A^{-1}"
+    "pseudo-inverse"                       →  r"A^{\dagger}"
+    "eigendecomposition of A"             →  r"A = Q\Lambda Q^{-1}"
+    "singular value decomposition (SVD)"  →  r"A = U\Sigma V^T"
+    "determinant"                          →  r"\det(A)"
+    "trace"                                →  r"\text{tr}(A)"
+    "L2 norm / Euclidean distance"        →  r"\|\mathbf{v}\|_2"
+    "L1 norm"                              →  r"\|\mathbf{v}\|_1"
+    "Hadamard / element-wise product"     →  r"A \odot B"
+    "outer product"                        →  r"\mathbf{u}\mathbf{v}^T"
+    "projection onto subspace"            →  r"P = A(A^TA)^{-1}A^T"
+    "covariance matrix"                    →  r"\Sigma = \mathbb{E}[(X-\mu)(X-\mu)^T]"
+
+  ── PROBABILITY & STATISTICS ──
+    "expected value / expectation of X"   →  r"\mathbb{E}[X]"
+    "conditional expectation"             →  r"\mathbb{E}[X \mid Y]"
+    "variance"                             →  r"\text{Var}(X) = \mathbb{E}[(X-\mu)^2]"
+    "standard deviation"                  →  r"\sigma = \sqrt{\text{Var}(X)}"
+    "probability of A given B"            →  r"P(A \mid B)"
+    "Bayes theorem"                        →  r"P(A|B) = \frac{P(B|A)P(A)}{P(B)}"
+    "normal / Gaussian distribution"      →  r"X \sim \mathcal{N}(\mu, \sigma^2)"
+    "KL divergence"                        →  r"D_{KL}(P \| Q) = \sum_x P(x)\log\frac{P(x)}{Q(x)}"
+    "entropy"                              →  r"H(X) = -\sum_x P(x)\log P(x)"
+    "maximum likelihood"                  →  r"\hat{\theta} = \arg\max_\theta \log P(X|\theta)"
+
+  ── MACHINE LEARNING & DEEP LEARNING ──
+    "softmax"                              →  r"\text{softmax}(z_i) = \frac{e^{z_i}}{\sum_j e^{z_j}}"
+    "sigmoid / logistic activation"       →  r"\sigma(z) = \frac{1}{1+e^{-z}}"
+    "ReLU"                                 →  r"\text{ReLU}(z) = \max(0, z)"
+    "tanh activation"                     →  r"\tanh(z) = \frac{e^z - e^{-z}}{e^z + e^{-z}}"
+    "cross-entropy loss"                  →  r"\mathcal{L} = -\sum_i y_i \log\hat{y}_i"
+    "mean squared error"                  →  r"\text{MSE} = \frac{1}{N}\sum_{i=1}^N (y_i-\hat{y}_i)^2"
+    "gradient descent update"             →  r"\theta \leftarrow \theta - \eta\nabla_\theta\mathcal{L}"
+    "backpropagation / chain rule"        →  r"\frac{\partial\mathcal{L}}{\partial W} = \frac{\partial\mathcal{L}}{\partial z}\cdot\frac{\partial z}{\partial W}"
+    "attention scores"                    →  r"\text{Attention}(Q,K,V)=\text{softmax}\!\left(\frac{QK^T}{\sqrt{d_k}}\right)V"
+    "layer / batch normalisation"         →  r"\hat{x}_i = \frac{x_i - \mu}{\sqrt{\sigma^2+\epsilon}}"
+    "weight decay / L2 regularisation"   →  r"\mathcal{L}_{\text{reg}} = \mathcal{L} + \lambda\|W\|_2^2"
+    "convolution"                          →  r"(f * g)[n] = \sum_k f[k]\,g[n-k]"
+    "transformer positional encoding"     →  r"PE_{pos,2i} = \sin\!\left(\frac{pos}{10000^{2i/d}}\right)"
+
+  ── GENERAL OPERATIONS ──
+    "sum / summation over all"            →  r"\sum_{i=1}^{n}"
+    "product over all"                    →  r"\prod_{i=1}^{n}"
+    "argmax / argmin"                     →  r"\arg\max_x f(x)"
+    "approximately equal"                 →  r"\approx"
+    "defined as"                           →  r"\triangleq"
+    "element of"                           →  r"x \in \mathbb{R}^n"
+    "real-valued space"                    →  r"\mathbb{R}^{m \times n}"
+    "proportional to"                      →  r"\propto"
+    "floor / ceiling"                     →  r"\lfloor x \rfloor" / r"\lceil x \rceil"
+
+  ── RENDERING RULES ──
+  R1. Always MathTex(r"..."), never Text() for any mathematical expression.
+  R2. Scale complex expressions: .scale(0.85) for fractions/sums, .scale(0.75) for long ones.
+  R3. Progressive reveal — show name first, then Transform() to formula:
+        label   = Text("Softmax", color=CYAN, font_size=36)
+        formula = MathTex(r"\frac{e^{z_i}}{\sum_j e^{z_j}}").scale(0.9)
+        self.play(Write(label))
+        self.wait(1.2)
+        self.play(Transform(label, formula))
+  R4. Multi-part derivations: build left-to-right, animate each term separately.
+  R5. Colour-code terms: weights=CYAN, inputs=ORANGE, bias=GOLD — use VGroup.arrange().
+  R6. Named operations: NAME above + FORMULA below in two-row VGroup layout.

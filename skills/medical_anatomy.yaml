@@ -76,3 +76,71 @@ timing_guidance: |
   Pathophysiology cascades: animate each step as narration reaches it.
   Use word timestamps to trigger each arrow/node: appear when narrator says the term.
   Total scene animation time must match duration_seconds.
+
+notation_decoder: |
+  ── DIAGNOSTIC LABELS ──
+  When narration describes a condition in plain English, the visual shows the clinical term.
+    "inflammation of the heart muscle"           → LABEL: "Myocarditis"
+    "blood clot in the lungs"                    → LABEL: "Pulmonary Embolism (PE)"
+    "narrowing of the coronary arteries"         → LABEL: "Coronary Artery Disease (CAD)"
+    "high blood pressure"                        → LABEL: "Hypertension" + Text: "BP > 130/80 mmHg"
+    "fluid backing up into the lungs"            → LABEL: "Pulmonary Edema"
+    "irregular heartbeat"                        → LABEL: "Arrhythmia" (specify type if named)
+    "low blood oxygen"                           → LABEL: "Hypoxemia" + MathTex: r"SpO_2 < 95\%"
+    "infection spreading through the bloodstream"→ LABEL: "Sepsis" → SIRS criteria table
+    "kidney failure / loss of kidney function"   → LABEL: "AKI" or "CKD" (stage if stated)
+    "blood sugar too high"                       → LABEL: "Hyperglycemia" + MathTex: r"BG > 180\,mg/dL"
+    "blood sugar too low"                        → LABEL: "Hypoglycemia" + MathTex: r"BG < 70\,mg/dL"
+    "lack of blood flow to the heart"            → LABEL: "Myocardial Ischemia" → "MI" if infarction
+
+  ── LAB VALUES (value + unit + reference range always shown together) ──
+    "sodium level / blood sodium"       → MathTex: r"Na^+ \quad [135\text{–}145\;mEq/L]"
+    "low sodium / hyponatremia"         → Text: "Hyponatremia" + MathTex: r"Na^+ < 135\;mEq/L"
+    "high sodium / hypernatremia"       → Text: "Hypernatremia" + MathTex: r"Na^+ > 145\;mEq/L"
+    "potassium level"                   → MathTex: r"K^+ \quad [3.5\text{–}5.0\;mEq/L]"
+    "low potassium / hypokalemia"       → MathTex: r"K^+ < 3.5\;mEq/L" + ARRHYTHMIA RISK badge
+    "high potassium / hyperkalemia"     → MathTex: r"K^+ > 5.0\;mEq/L" + CARDIAC RISK badge
+    "blood pH"                          → MathTex: r"pH \quad [7.35\text{–}7.45]"
+    "acidosis"                          → MathTex: r"pH < 7.35"   (+ cause: respiratory or metabolic)
+    "alkalosis"                         → MathTex: r"pH > 7.45"   (+ cause: respiratory or metabolic)
+    "CO2 / carbon dioxide in blood"     → MathTex: r"PaCO_2 \quad [35\text{–}45\;mmHg]"
+    "bicarbonate"                       → MathTex: r"HCO_3^- \quad [22\text{–}26\;mEq/L]"
+    "hemoglobin"                        → MathTex: r"Hgb:\;M > 13.5,\;F > 12\;g/dL"
+    "oxygen saturation"                 → MathTex: r"SpO_2 \geq 95\%"
+    "creatinine / kidney function"      → MathTex: r"Cr:\;M\;0.7\text{–}1.2,\;F\;0.5\text{–}1.0\;mg/dL"
+    "blood glucose fasting"             → MathTex: r"BG:\;70\text{–}100\;mg/dL\;(fasting)"
+    "INR / clotting time"               → MathTex: r"INR:\;0.8\text{–}1.2\;\text{(therapeutic: }2\text{–}3\text{)}"
+    "troponin / cardiac biomarker"      → MathTex: r"Troponin\;I < 0.04\;\mu g/L" + MI MARKER badge
+
+  ── ANATOMICAL ABBREVIATIONS (use in visual labels and callouts) ──
+    "left ventricle"          → LV      "right ventricle"      → RV
+    "left atrium"             → LA      "right atrium"         → RA
+    "sinoatrial node"         → SA node "atrioventricular node"→ AV node
+    "systolic blood pressure" → SBP     "diastolic"            → DBP
+    "superior vena cava"      → SVC     "inferior vena cava"   → IVC
+    "pulmonary artery"        → PA      "aorta"                → Ao
+    "mean arterial pressure"  → MathTex: r"MAP = DBP + \tfrac{1}{3}(SBP - DBP)"
+
+  ── ECG NOTATION ──
+  Render ECG components as labeled waveform segments on a timeline:
+    "P wave"         → atrial depolarization    [normal < 0.12 s]
+    "QRS complex"    → ventricular depolarization [normal < 0.12 s]
+    "T wave"         → ventricular repolarization
+    "PR interval"    → MathTex: r"PR:\;0.12\text{–}0.20\,s"
+    "QTc interval"   → MathTex: r"QTc < 440\,ms\;(M),\;< 460\,ms\;(F)"
+    "atrial fibrillation" → irregularly irregular baseline, absent P waves label
+    "first-degree heart block" → PR > 0.20 s, constant but prolonged annotation
+
+  ── PHARMACOLOGY SHORTHAND ──
+    "mechanism of action"     → always render as arrow chain: Drug → [MOA box] → Clinical Effect
+    "half-life"               → MathTex: r"t_{1/2}"
+    "onset / peak / duration" → 3-column table: Onset | Peak | Duration
+    "ACE inhibitor"           → ACEi: ↓ Angiotensin II → ↓ vasoconstriction, ↓ aldosterone
+    "beta blocker"            → β-blocker: ↓ HR, ↓ BP, ↓ myocardial O₂ demand
+    "diuretic"                → ↑ urine output → ↓ preload → ↓ BP
+    "vasopressor"             → ↑ SVR → ↑ MAP (show MAP formula alongside)
+    "therapeutic drug level"  → render as number line: sub-therapeutic | THERAPEUTIC | toxic
+
+  RENDERING RULE: Clinical labels always use Text() in GOLD (#FFD700) for diagnoses,
+  CYAN for normal values, ORANGE for abnormal, RED for critical/life-threatening.
+  Lab reference ranges always in DIM; patient values in WHITE with color-coded badge.

@@ -22,6 +22,7 @@ from config import ProcExConfig, RESOLUTIONS, MANIM_PALETTE_BLOCK
 from utils.llm_client import LLMClient
 from utils.ken_burns import image_to_video_clip, cycle_effect
 from agents.base_agent import BaseAgent
+from agents.vlm_critic import VLMCritic, CriticResult
 
 
 # Maximum number of regenerate-and-retry cycles per scene before black fallback
@@ -94,6 +95,67 @@ class RendererAgent(BaseAgent):
         except Exception as e:
             self._log(f"Scene {scene.id}: emergency fallback failed: {e}")
             return None
+
+    def render_with_critic(
+        self,
+        scene,
+        resolution:  str,
+        out_dir:     str,
+        critic:      "VLMCritic | None" = None,
+    ) -> tuple:
+        """
+        Render once, then run the VLM Critic if available.
+        Used by parallel_runner's render_worker in place of render_scene_once.
+
+        Flow:
+          1. render_scene_once  → if fails, return (None, error) immediately
+          2. critic.inspect()   → CriticResult
+             "ok"           → return (clip_path, None) as-is
+             "patched"      → re-render once with corrected code
+                               (uses one slot from caller's retry budget)
+             "split_needed" → flag scene._split_recommended = True,
+                               return original clip (split handled by orchestrator
+                               in a future pass — current clip used as fallback)
+        """
+        clip_path, error = self.render_scene_once(scene, resolution, out_dir)
+
+        if error or critic is None:
+            return clip_path, error
+
+        # ── VLM Critic inspection ─────────────────────────────────────────────
+        try:
+            result: CriticResult = critic.inspect(clip_path, scene)
+        except Exception as e:
+            self._log(f"Scene {scene.id}: critic error (non-fatal): {e}")
+            return clip_path, None
+
+        if result.status == "ok":
+            return clip_path, None
+
+        if result.status == "split_needed":
+            self._log(
+                f"Scene {scene.id}: Critic recommends split — "
+                f"{result.reason}. Flagging for orchestrator."
+            )
+            scene._split_recommended = True
+            return clip_path, None   # return original clip as-is
+
+        if result.status == "patched":
+            self._log(
+                f"Scene {scene.id}: Critic patched {len(result.issues)} "
+                f"collision(s) — re-rendering..."
+            )
+            # One critic re-render (does not consume REGEN_RETRIES budget)
+            new_clip, new_err = self.render_scene_once(scene, resolution, out_dir)
+            if new_err:
+                self._log(
+                    f"Scene {scene.id}: critic re-render failed ({new_err}) "
+                    f"— keeping original"
+                )
+                return clip_path, None   # return original; don't escalate
+            return new_clip, None
+
+        return clip_path, None
 
     # ── Render with regeneration loop ─────────────────────────────────────────
 

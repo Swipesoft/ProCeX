@@ -33,7 +33,78 @@ Format:
   ]
 }}
 
-RULES:
+═══════════════════════════════════════════════════════════
+MATHEMATICAL NARRATION RULES  (apply to ALL domains)
+═══════════════════════════════════════════════════════════
+
+These rules govern how any formula, equation, or symbolic expression
+is spoken in narration_text. They apply equally to mathematics, machine
+learning, physics, economics, biology, and any other quantitative domain.
+
+RULE 1 — DEFINE BEFORE YOU USE
+  The first time a symbol or formula appears in narration, introduce it
+  with a plain-English "where" clause that assigns a human-readable name
+  to each symbol. Never assume the viewer reads the screen.
+
+  ✓ DO:   "The network computes an output — where W is the weight matrix,
+            x is the input vector, and b the bias term."
+  ✗ DON'T: "The network computes W transpose x plus b."
+
+RULE 2 — NAME THE OPERATION, NOT THE SYMBOLS
+  After defining symbols, refer to operations by their mathematical name.
+  Never read out a formula's structure as if spelling it aloud.
+
+  ✓ DO:   "This is a dot product of the weights and input, offset by a bias —
+            the classic affine transformation."
+  ✓ DO:   "We decompose the matrix into its eigenvectors and eigenvalues."
+  ✓ DO:   "The softmax normalises these scores into a probability distribution."
+  ✓ DO:   "We compute the gradient of the loss with respect to each weight."
+  ✓ DO:   "The convolution slides a kernel across the input, summing overlaps."
+  ✗ DON'T: "We compute W transpose x plus b."
+  ✗ DON'T: "A equals Q lambda Q inverse."
+  ✗ DON'T: "e to the z-i over the sum of e to the z-j."
+  ✗ DON'T: "partial L partial W."
+
+RULE 3 — GREEK LETTERS: USE THEIR MEANING, NOT THEIR NAME
+  Replace Greek letter names with their contextual meaning unless the
+  letter name itself IS the standard spoken form (e.g. "alpha" for
+  learning rate is acceptable colloquially).
+
+  ✓ DO:   "the sigmoid activation"         (not "sigma of z")
+  ✓ DO:   "the learning rate"              (not "eta" or "the learning rate eta")
+  ✓ DO:   "the mean of the distribution"   (not "mu")
+  ✓ DO:   "the standard deviation"         (not "sigma" when referring to spread)
+  ✓ DO:   "summing across all elements"    (not "sum over i from 1 to n")
+
+RULE 4 — SUBSCRIPTS, SUPERSCRIPTS, AND INDICES: DESCRIBE THE ROLE
+  Never read index notation aloud. Describe what it means structurally.
+
+  ✓ DO:   "for each element in the sequence"     (not "x sub i")
+  ✓ DO:   "raised to the second power"           (not "x superscript 2")
+  ✓ DO:   "the weight connecting layer l to l+1" (not "W superscript l")
+  ✓ DO:   "each training example"                (not "the i-th sample")
+
+RULE 5 — RE-USE THE HANDLE, NOT THE FORMULA
+  After the first definition-and-naming of a concept, subsequent
+  references use only the established handle — never re-spell the formula.
+
+  ✓ DO (second mention):  "Applying this affine transformation again..."
+  ✓ DO (second mention):  "Back-propagating this gradient..."
+  ✗ DON'T (second mention): "Applying W transpose x plus b again..."
+
+RULE 6 — FRACTIONS AND RATIOS: STATE THE RELATIONSHIP
+  ✓ DO:   "normalised by the total count"      (not "divided by N")
+  ✓ DO:   "the ratio of signal to noise"       (not "S over N")
+  ✓ DO:   "scaled by one over the square root of the dimension"
+
+RULE 7 — LIMITS, SUMMATIONS, INTEGRALS: NAME THE SWEEP
+  ✓ DO:   "summing the contributions of every training example"
+  ✓ DO:   "integrating the probability density across all outcomes"
+  ✓ DO:   "as the step size approaches zero"
+  ✗ DON'T: "the integral from zero to infinity of f of x dx"
+═══════════════════════════════════════════════════════════
+
+GENERAL SCRIPT RULES:
 - narration_text must be natural spoken English (not bullet points).
 - Each scene = one cohesive idea, ~25-55 seconds of narration.
 - duration_seconds = approximate TTS duration (estimate 2.8 words/second).
