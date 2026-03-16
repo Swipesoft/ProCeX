@@ -5,14 +5,15 @@ Usage:
     python main.py --input paper.pdf --topic "Attention Mechanism" --resolution 4K --minutes 10
     python main.py --resume output/checkpoints/attention_mechanism_checkpoint.json
 """
-
-from dotenv import load_dotenv
-load_dotenv()
-
 import argparse
 import os
 import sys
-
+# Load .env file if present
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass   # dotenv not installed — keys must be set in environment manually
 
 # ── Force UTF-8 output on Windows (cmd/PowerShell default to cp1252) ──────────
 if sys.platform == "win32":
@@ -39,13 +40,14 @@ Examples:
     parser.add_argument(
         "--input", "-i",
         type=str,
-        help="Path to input PDF file"
+        default=None,
+        help="Path to input PDF file. If omitted and --topic is given, a deep research report is auto-generated."
     )
     parser.add_argument(
         "--topic", "-t",
         type=str,
         default="",
-        help="Optional topic hint for naming the output file (e.g. 'Attention Mechanism')"
+        help="Topic hint for naming the output, or the research topic when --input is omitted."
     )
     parser.add_argument(
         "--resolution", "-r",
@@ -76,8 +78,8 @@ Examples:
     args = parser.parse_args()
 
     # Validate
-    if not args.resume and not args.input:
-        parser.error("Either --input or --resume is required")
+    if not args.resume and not args.input and not args.topic:
+        parser.error("Either --input, --topic (for deep research), or --resume is required")
 
     if args.input and not os.path.exists(args.input):
         parser.error(f"Input file not found: {args.input}")
@@ -91,25 +93,40 @@ Examples:
     from orchestrator import ProcExOrchestrator
 
     cfg = ProcExConfig(output_root=args.output_dir)
-    pipeline = ProcExOrchestrator(cfg)
 
     print(f"""
 ╔══════════════════════════════════════════════════════════╗
 ║           ProcEx — Procedural Cinematic Explainer         ║
 ╚══════════════════════════════════════════════════════════╝
-  Input:       {args.input or 'N/A (resuming)'}
+  Input:       {args.input or 'N/A (deep research mode)'}
   Topic:       {args.topic or 'auto-detect'}
   Resolution:  {args.resolution}
   Duration:    {args.minutes} min (target)
   Output dir:  {args.output_dir}/videos/
 """)
 
+    # ── Deep research mode: no --input, topic provided ────────────────────────
+    input_path = args.input or ""
+    pipeline   = ProcExOrchestrator(cfg)   # init once — owns the llm client
+
+    if not input_path and args.topic and not args.resume:
+        print("[ProcEx] No --input provided — entering deep research mode...")
+        from agents.deep_research import DeepResearchAgent
+
+        research = DeepResearchAgent(cfg, pipeline.llm)  # reuse orchestrator's llm
+        input_path = research.research(
+            topic=args.topic,
+            target_minutes=args.minutes,
+        )
+        print(f"[ProcEx] ✓ Research report generated: {input_path}")
+        print(f"[ProcEx] ▶ Handing off to video pipeline...")
+
     output_path = pipeline.run(
-        input_path          = args.input or "",
-        topic_hint          = args.topic,
-        resolution          = args.resolution,
-        target_minutes      = args.minutes,
-        resume_checkpoint   = args.resume,
+        input_path=input_path,
+        topic_hint=args.topic,
+        resolution=args.resolution,
+        target_minutes=args.minutes,
+        resume_checkpoint=args.resume,
     )
 
     print(f"\n✅ Done! Video saved to: {output_path}")

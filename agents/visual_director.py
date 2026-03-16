@@ -39,31 +39,55 @@ MANIM          → Python Manim animations. Use for:
                  • Lab value charts, drug comparison tables
                  • Clinical reasoning frameworks (BowTie, ADPIE, priority lists)
                  • Pharmacology MOA (receptor diagrams, enzyme cascades)
-                 • ANYTHING conceptual/abstract that doesn't need a real image
-                 • DEFAULT FOR ALL DOMAINS unless anatomy is explicitly needed
+                 • ANYTHING conceptual/abstract that does not require a real image
 
-IMAGE_GEN      → NanoBanana (Gemini image generation). Use ONLY for:
-                 • Scenes where the viewer MUST see a real anatomical structure spatially
-                 • Gross anatomy (cross-sections, organ location, body regions)
-                 • Histology (cell/tissue appearance the viewer needs to recognize)
-                 • Physical assessment findings (wound, skin, inspection)
-                 • When the script says things like "here you can see the [organ]"
-                 DO NOT use for: mechanisms, pharmacology, pathophysiology, clinical reasoning
+IMAGE_GEN      → NanoBanana (Gemini image generation). MANDATORY for:
+                 • Scenes where the viewer MUST spatially recognise a real
+                   anatomical or physical structure they would see in a textbook
+                 • Gross anatomy (organ location, cross-sections, body regions)
+                 • Histology (cell/tissue appearance the viewer needs to recognise)
+                 • Physical assessment findings (wound, skin, inspection findings)
+                 • Any scene whose narration says or implies "here you can see
+                   the [structure]" or "notice the appearance of [structure]"
 
-IMAGE_MANIM_HYBRID → NanoBanana background image + Manim text/arrows overlaid. Use for:
-                 • Anatomy scene that also needs annotated arrows or process overlay
-                 • "This is the kidney [image] — and here's how filtration works [Manim overlay]"
+IMAGE_MANIM_HYBRID → NanoBanana background + Manim overlay. MANDATORY for:
+                 • Anatomy scene that also needs annotated arrows OR process overlay
+                 • "This is the kidney [image] — here's how filtration works [overlay]"
 
-TEXT_ANIMATION → Manim but just cinematic text/title cards. Use for:
+TEXT_ANIMATION → Manim cinematic text/title cards only. Use for:
                  • Opening hooks, section transitions, closing synthesis
-                 • Scenes that are narrative/conceptual with no specific visual anchor
+                 • Narrative/conceptual scenes with no specific visual anchor
 ─────────────────────────────────────────────────────────────────────────────
 
-CRITICAL RULE: For medical/NCLEX content, MOST scenes use MANIM, not IMAGE_GEN.
-Pathophysiology of diabetes → MANIM flowchart.
-Pharmacology of opioids → MANIM receptor diagram.
-Anatomy of the nephron → IMAGE_GEN (viewer needs to see the structure spatially).
-This distinction is the most important judgment you make.
+══════════════════════════════════════════════════════════════════
+IMAGE_GEN TRIGGER GATE — READ THIS BEFORE DECIDING EVERY SCENE
+══════════════════════════════════════════════════════════════════
+You will be given a list of image_gen_triggers for the active domain.
+These are NOT suggestions. They are MANDATORY conditions:
+
+  IF the scene narration contains or strongly implies any trigger topic
+  THEN visual_strategy MUST be IMAGE_GEN or IMAGE_MANIM_HYBRID.
+  MANIM is NOT a valid choice for these scenes — Manim cannot render
+  spatial anatomy, histology, or physical assessment findings.
+
+The triggers define the boundary between "conceptual" (→ MANIM) and
+"spatial/structural" (→ IMAGE_GEN). When in doubt about which side a
+scene falls on, ask: "Would a medical textbook show a photograph or
+diagram here?" If yes → IMAGE_GEN. If it would show a flowchart or
+equation → MANIM.
+
+Examples of correct decisions:
+  "the glomerulus filters blood through fenestrated capillaries"
+    → IMAGE_GEN  (viewer needs to SEE the glomerular structure)
+  "insulin resistance occurs when receptors fail to respond"
+    → MANIM      (mechanism/cascade — no spatial anatomy needed)
+  "here we see the cross-section of the renal corpuscle"
+    → IMAGE_GEN  (explicit spatial anatomy)
+  "the coagulation cascade activates factor X"
+    → MANIM      (pathway/flowchart — no real image needed)
+  "podocytes form filtration slits along the basement membrane"
+    → IMAGE_MANIM_HYBRID  (needs anatomy image + Manim overlay for slits)
+══════════════════════════════════════════════════════════════════
 
 OUTPUT FORMAT: Return ONLY valid JSON array — no fences, no prose.
 [
@@ -87,7 +111,6 @@ OUTPUT FORMAT: Return ONLY valid JSON array — no fences, no prose.
 
 element_count: estimate the number of distinct visual elements (boxes, labels, icons,
 arrows, text blocks) that will appear on screen simultaneously at peak density.
-This is used by the layout critic to decide whether to inspect the rendered scene.
 Be realistic — a simple title card is 1, a BowTie diagram with 5 arms is 7, a
 medication table with 4 columns is 6.
 
@@ -109,52 +132,65 @@ zone_allocation: assign EVERY distinct on-screen element to a named zone from th
 
 ZONE ALLOCATION RULES:
 - Every key in zone_allocation must be a short snake_case label describing what the element IS
-  (e.g. "formula", "step_counter", "priority_badge") — NOT a zone name
-- No two elements may share the same zone. If you have more elements than zones,
-  reduce element_count by grouping related elements into one composite element.
-- TEXT_ANIMATION scenes: use only TITLE + optional SUBTITLE + optional FOOTER (max 3 zones)
-- MANIM scenes: prefer TITLE + MAIN combination as the baseline; add SIDEBAR for secondary info
+- No two elements may share the same zone
+- TEXT_ANIMATION scenes: use only TITLE + optional SUBTITLE + optional FOOTER
 - A scene_title element MUST always occupy TITLE zone — every scene
 
 For visual_prompt:
-- MANIM: Describe exactly what Manim objects/animations to create. Reference specific Manim classes.
-  Include timing guidance derived from the word timestamps. Be very specific.
-- IMAGE_GEN: Write a complete NanoBanana prompt. Include style, resolution, content, labels needed.
-  Format: "Medical illustration of [subject]. [Style]. [Specific structures to show]. [4K/2K]."
-- IMAGE_MANIM_HYBRID: Describe both the background image AND the Manim overlay separately.
+- MANIM: Describe exactly what Manim objects/animations to create. Be very specific.
+- IMAGE_GEN: Write a complete NanoBanana prompt:
+  "Medical illustration of [subject]. [Style]. [Specific structures]. [4K/2K]."
+- IMAGE_MANIM_HYBRID: Describe the background image AND the Manim overlay separately.
 """
 
 
 def _build_director_prompt(state: ProcExState) -> str:
     skill = state.skill_pack
-    triggers   = skill.get("image_gen_triggers", [])
-    preferred  = skill.get("manim_preferred_topics", [])
-    manim_style = skill.get("manim_style", "")
-    image_style = skill.get("image_gen_style", "")
+    triggers       = skill.get("image_gen_triggers", [])
+    preferred      = skill.get("manim_preferred_topics", [])
+    manim_style    = skill.get("manim_style", "")
+    image_style    = skill.get("image_gen_style", "")
     manim_elements = skill.get("manim_elements", [])
+
+    # Format triggers as a hard gate checklist, not a soft list
+    if triggers:
+        trigger_lines = "\n".join(f"  • {t}" for t in triggers)
+        trigger_block = (
+            "MANDATORY IMAGE_GEN TRIGGERS FOR THIS DOMAIN\n"
+            "If a scene's narration involves ANY of the following, visual_strategy\n"
+            "MUST be IMAGE_GEN or IMAGE_MANIM_HYBRID — MANIM is forbidden:\n"
+            f"{trigger_lines}"
+        )
+    else:
+        trigger_block = "IMAGE_GEN TRIGGERS: none — this domain never uses image generation."
+
+    if preferred:
+        manim_block = "MANIM is mandatory for: " + ", ".join(preferred)
+    else:
+        manim_block = "MANIM is the default for all non-trigger scenes."
 
     scenes_json = []
     for scene in state.scenes:
-        ts_sample = timestamps_to_dict_list(scene.timestamps[:20])  # first 20 words
+        ts_sample = timestamps_to_dict_list(scene.timestamps[:20])
         scenes_json.append({
-            "id":              scene.id,
-            "narration_text":  scene.narration_text,
-            "duration_seconds": round(scene.duration_seconds, 1),
-            "initial_visual_hint": scene.visual_prompt,
+            "id":                    scene.id,
+            "narration_text":        scene.narration_text,
+            "duration_seconds":      round(scene.duration_seconds, 1),
+            "initial_visual_hint":   scene.visual_prompt,
             "word_timestamps_sample": ts_sample,
         })
 
     return f"""Domain: {state.domain.value}
 Resolution: {state.resolution}
 
-DOMAIN-SPECIFIC RULES:
-Image gen ONLY triggers on scenes about: {triggers if triggers else "NOTHING — this domain never uses image gen"}
-Manim preferred for: {preferred if preferred else "everything"}
+{trigger_block}
+
+{manim_block}
 
 MANIM STYLE GUIDE FOR THIS DOMAIN:
 {manim_style}
 
-IMAGE GEN STYLE GUIDE (only if using IMAGE_GEN):
+IMAGE GEN STYLE GUIDE (only if using IMAGE_GEN or HYBRID):
 {image_style}
 
 AVAILABLE MANIM ELEMENTS FOR THIS DOMAIN:
@@ -169,6 +205,8 @@ SCENES TO DIRECT:
 
 ---
 Direct all {len(state.scenes)} scenes. Return the JSON array.
+Apply the IMAGE_GEN trigger gate rigorously — check each scene's narration_text
+against the trigger list before assigning MANIM.
 """
 
 
@@ -196,11 +234,23 @@ class VisualDirector(BaseAgent):
         if not isinstance(results, list):
             results = results.get("scenes", []) if isinstance(results, dict) else []
 
-        # Build lookup by scene_id
-        by_id = {r["scene_id"]: r for r in results if "scene_id" in r}
+        # Log what came back for diagnostics
+        self._log(f"LLM returned {len(results)} scene direction(s)")
+        if results:
+            # Show keys present in first item so mismatches are immediately visible
+            self._log(f"Response item keys: {list(results[0].keys()) if results else '[]'}")
+
+        # Build lookup — handle both "scene_id" (schema) and "id" (model sometimes echoes input key)
+        by_id = {}
+        for r in results:
+            if not isinstance(r, dict):
+                continue
+            sid = r.get("scene_id") or r.get("id")
+            if sid is not None:
+                by_id[int(sid)] = r
 
         for scene in state.scenes:
-            d = by_id.get(scene.id)
+            d = by_id.get(int(scene.id))
             if not d:
                 self._log(f"No direction for scene {scene.id} — defaulting to MANIM")
                 scene.visual_strategy = VisualStrategy.MANIM

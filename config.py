@@ -96,7 +96,7 @@ class ProcExConfig:
     # ── LLM Models (text) ─────────────────────
     # Fallback chain: Claude → Gemini → OpenAI
     claude_model:        str = "claude-sonnet-4-6" #"claude-opus-4-6" #"claude-sonnet-4-6"
-    gemini_text_model:   str = "gemini-3-flash-preview"
+    gemini_text_model:   str = "gemini-3-flash-preview" #"gemini-3-flash-preview"
     openai_model:        str = "gpt-5.4-2026-03-05"
 
     # ── Per-agent primary LLM ────────────────────────────────────────────────

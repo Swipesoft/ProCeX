@@ -46,6 +46,9 @@ class ProcExOrchestrator:
             state = ProcExState.load_checkpoint(resume_checkpoint)
         else:
             state = self._init_state(input_path, topic_hint, resolution, target_minutes)
+            # Fresh run — purge any stale checkpoint for this topic so no
+            # agent is ever silently skipped with outdated decisions.
+            self._clear_checkpoint(state)
 
         for issue in self.cfg.validate():
             print(f"[ProcEx] ⚠ {issue}")
@@ -208,13 +211,26 @@ class ProcExOrchestrator:
         except Exception as e:
             print(f"[ProcEx] Checkpoint save failed (non-critical): {e}")
 
+    def _clear_checkpoint(self, state: ProcExState) -> None:
+        """Delete any existing checkpoint for this topic slug on a fresh run."""
+        ckpt_dir  = self.cfg.dirs["checkpoints"]
+        ckpt_path = os.path.join(ckpt_dir, f"{state.topic_slug}_checkpoint.json")
+        if os.path.exists(ckpt_path):
+            try:
+                os.remove(ckpt_path)
+                print(f"[ProcEx] ✗ Stale checkpoint deleted: {ckpt_path}")
+            except Exception as e:
+                print(f"[ProcEx] ⚠ Could not delete stale checkpoint: {e}")
+
     @staticmethod
     def _stage_done(state: ProcExState, agent_name: str) -> bool:
         if agent_name == "DomainRouter"   and state.skill_pack:              return True
         if agent_name == "ScriptWriter"   and state.scenes:                  return True
         if agent_name == "TTSAgent"       and state.audio_path:              return True
         if agent_name == "VisualDirector" and all(
-            s.visual_prompt for s in state.scenes):                          return True
+            s.visual_prompt and s.zone_allocation               # zone_allocation required —
+            for s in state.scenes):                             # old checkpoints without it
+            return True                                         # will always re-run director
         if agent_name == "ManimCoder"     and all(
             s.manim_file_path or s.visual_strategy not in (
                 VisualStrategy.MANIM, VisualStrategy.TEXT_ANIMATION)
