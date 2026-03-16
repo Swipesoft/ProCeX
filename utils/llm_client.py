@@ -302,20 +302,34 @@ class LLMClient:
 
     # ── OpenAI ────────────────────────────────────────────────────────────────
 
+    # Models that use max_completion_tokens instead of max_tokens,
+    # and do not accept a temperature parameter.
+    _OPENAI_REASONING_PREFIXES = ("o1", "o3", "o4", "gpt-5")
+
     def _call_openai(self, system, user, max_tokens, temperature, model_override):
         model = model_override or self.cfg.openai_model
         if model.startswith("claude") or model.startswith("gemini"):
             model = self.cfg.openai_model
 
-        response = self._openai.chat.completions.create(
-            model=model,
-            messages=[
+        is_reasoning = any(model.startswith(p) for p in self._OPENAI_REASONING_PREFIXES)
+
+        kwargs: dict = dict(
+            model    = model,
+            messages = [
                 {"role": "system", "content": system},
                 {"role": "user",   "content": user},
             ],
-            max_tokens=max_tokens,
-            temperature=temperature,
         )
+
+        if is_reasoning:
+            # Reasoning models: max_completion_tokens, no temperature
+            kwargs["max_completion_tokens"] = max_tokens
+        else:
+            # Classic chat models: max_tokens + temperature
+            kwargs["max_tokens"]  = max_tokens
+            kwargs["temperature"] = temperature
+
+        response = self._openai.chat.completions.create(**kwargs)
         return response.choices[0].message.content
 
     # ── JSON extraction ───────────────────────────────────────────────────────
