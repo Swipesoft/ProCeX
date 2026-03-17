@@ -56,10 +56,10 @@ from utils.spatial_grid import (
 
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
-CRITIC_DENSITY_THRESHOLD = 5   # element count >= this triggers critic (was 3)
+CRITIC_DENSITY_THRESHOLD = 2   # element count >= this triggers critic (was 3)
 CRITIC_MAX_PATCHES       = 5   # max correction actions per scene
 PATCH_MAX_TOKENS         = 4096
-VISION_MAX_TOKENS        = 4096
+VISION_MAX_TOKENS        = 1024
 KEYFRAME_OFFSETS         = [0.25, 0.50, 0.75]  # sample at 25%, 50%, 75% of clip
 
 
@@ -197,6 +197,7 @@ class VLMCritic(BaseAgent):
         clip_path:    str,
         scene:        Scene,
         manim_code:   Optional[str] = None,
+        aspect:       str           = "16:9",
     ) -> CriticResult:
         """
         Main entry point. Called by RendererAgent after a successful render.
@@ -240,7 +241,7 @@ class VLMCritic(BaseAgent):
         annotated_frames = []
         for fb in frames:
             try:
-                annotated_frames.append(draw_grid_overlay(fb))
+                annotated_frames.append(draw_grid_overlay(fb, aspect=aspect))
             except Exception as e:
                 self._log(f"Scene {scene.id}: grid overlay failed ({e}) — using raw frame")
                 annotated_frames.append(fb)
@@ -248,7 +249,7 @@ class VLMCritic(BaseAgent):
 
         # ── Stage 1: Gemini inspects all frames, worst result wins ───────────
         self._log(f"Scene {scene.id}: [stage 1] sending {len(annotated_frames)} frame(s) to Gemini vision...")
-        vision_result = self._run_vision_analysis_multi(annotated_frames, scene)
+        vision_result = self._run_vision_analysis_multi(annotated_frames, scene, aspect=aspect)
         if vision_result is None:
             self._log(f"Scene {scene.id}: vision analysis failed gracefully — passing")
             return CriticResult(status="ok", reason="vision analysis failed gracefully")
@@ -297,7 +298,7 @@ class VLMCritic(BaseAgent):
 
         # ── Stage 2: Claude patches the code ─────────────────────────────────
         self._log(f"Scene {scene.id}: [stage 2] sending {len(issues)} correction(s) to Claude patcher...")
-        patched = self._run_code_patch(code, issues, scene)
+        patched = self._run_code_patch(code, issues, scene, aspect=aspect)
         if not patched or patched == code:
             self._log(f"Scene {scene.id}: patch produced no change — passing as-is")
             return CriticResult(
@@ -397,7 +398,7 @@ class VLMCritic(BaseAgent):
     # ── Vision analysis (Gemini) ──────────────────────────────────────────────
 
     def _run_vision_analysis_multi(
-        self, frames: list[bytes], scene: Scene
+        self, frames: list[bytes], scene: Scene, aspect: str = "16:9"
     ) -> Optional[dict]:
         """
         Run vision analysis on each frame; return the worst result
@@ -406,7 +407,7 @@ class VLMCritic(BaseAgent):
         """
         results = []
         for i, frame in enumerate(frames):
-            r = self._run_vision_analysis(frame, scene)
+            r = self._run_vision_analysis(frame, scene, aspect=aspect)
             if r is not None:
                 results.append((i, r))
 
@@ -427,7 +428,7 @@ class VLMCritic(BaseAgent):
         mid = results[len(results) // 2]
         return mid[1]
 
-    def _run_vision_analysis(self, frame_bytes: bytes, scene: Scene) -> Optional[dict]:
+    def _run_vision_analysis(self, frame_bytes: bytes, scene: Scene, aspect: str = "16:9") -> Optional[dict]:
         """
         Send annotated frame to Gemini vision. Returns parsed dict or None.
         """
@@ -435,7 +436,7 @@ class VLMCritic(BaseAgent):
             title          = scene.title or "Untitled Scene",
             description    = scene.description or "No description available",
             narration_hint = (scene.narration_text or "")[:300],
-            zone_manifest  = zone_manifest(),
+            zone_manifest  = zone_manifest(aspect),
         )
 
         try:
@@ -467,6 +468,7 @@ class VLMCritic(BaseAgent):
         original_code: str,
         issues:        list[CriticIssue],
         scene:         Scene,
+        aspect:        str = "16:9",
     ) -> Optional[str]:
         """
         Hand correction instructions to Claude (code-strong) to produce a
@@ -474,8 +476,8 @@ class VLMCritic(BaseAgent):
         """
         correction_lines = []
         for i, issue in enumerate(issues, 1):
-            hint = zone_to_shift_hint(issue.from_zone, issue.to_zone)
-            pos  = zone_to_manim_position(issue.to_zone)
+            hint = zone_to_shift_hint(issue.from_zone, issue.to_zone, aspect=aspect)
+            pos  = zone_to_manim_position(issue.to_zone, aspect=aspect)
             correction_lines.append(
                 f"{i}. [{issue.severity.upper()}] Element: '{issue.element}'\n"
                 f"   Action: {issue.action}\n"
@@ -488,7 +490,7 @@ class VLMCritic(BaseAgent):
         user_prompt = PATCHER_USER_TMPL.format(
             original_code          = original_code,
             correction_instructions= correction_block,
-            zone_manifest          = zone_manifest(),
+            zone_manifest          = zone_manifest(aspect),
         )
 
         try:

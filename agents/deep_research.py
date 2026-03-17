@@ -444,10 +444,10 @@ class DeepResearchAgent(BaseAgent):
                 self._log(f"  §{section.index:02d} figure ✗  {e}")
 
     @staticmethod
-    def _enrich_image_prompt(prompt: str) -> str:
+    def _enrich_image_prompt(prompt: str, aspect: str = "16:9") -> str:
         additions = []
-        if "16:9" not in prompt:
-            additions.append("16:9 aspect ratio")
+        if aspect not in prompt:
+            additions.append(f"{aspect} aspect ratio")
         if "2K" not in prompt and "4K" not in prompt:
             additions.append("2K resolution")
         if "medical illustration" not in prompt.lower() and "illustration" not in prompt.lower():
@@ -604,7 +604,7 @@ class DeepResearchAgent(BaseAgent):
             color=colors.HexColor("#E2E8F0"), spaceAfter=8,
         ))
         story.append(Paragraph(
-            "This report was generated entirely by ProCeX DeepResearch Agent",
+            "(C)ProCeX DeepResearch 2026",
             S["footer_note"],
         ))
 
@@ -665,3 +665,4 @@ def _split_paragraphs(prose: str) -> list[str]:
     """Split prose into non-empty paragraphs on blank lines."""
     paras = re.split(r"\n{2,}", prose.strip())
     return [p.replace("\n", " ").strip() for p in paras if p.strip()]
+

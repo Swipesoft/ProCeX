@@ -145,12 +145,20 @@ For visual_prompt:
 
 
 def _build_director_prompt(state: ProcExState) -> str:
+    from config import RESOLUTIONS
+    from utils.spatial_grid import get_zones
+
     skill = state.skill_pack
     triggers       = skill.get("image_gen_triggers", [])
     preferred      = skill.get("manim_preferred_topics", [])
     manim_style    = skill.get("manim_style", "")
     image_style    = skill.get("image_gen_style", "")
     manim_elements = skill.get("manim_elements", [])
+
+    res    = RESOLUTIONS.get(state.resolution, RESOLUTIONS["1080p"])
+    aspect = res.aspect_ratio
+    zones  = get_zones(aspect)
+    zone_names = list(zones.keys())
 
     # Format triggers as a hard gate checklist, not a soft list
     if triggers:
@@ -169,6 +177,21 @@ def _build_director_prompt(state: ProcExState) -> str:
     else:
         manim_block = "MANIM is the default for all non-trigger scenes."
 
+    # Portrait-specific zone guidance
+    if aspect == "9:16":
+        zone_layout_note = (
+            "ASPECT: 9:16 PORTRAIT — tall narrow canvas (phone/Reels/Shorts format).\n"
+            "Zone allocation MUST use vertical stacking. SIDEBAR zone does not exist.\n"
+            "Preferred layout: TITLE → UPPER_MAIN → MAIN → LOWER_MAIN → FOOTER.\n"
+            "For two-panel layouts use UPPER_HALF / LOWER_HALF, not LEFT/RIGHT."
+        )
+    else:
+        zone_layout_note = (
+            "ASPECT: 16:9 LANDSCAPE — wide canvas (standard video format).\n"
+            "Zone allocation can use horizontal layouts: MAIN + SIDEBAR is the baseline.\n"
+            "Preferred layout: TITLE + MAIN, with SIDEBAR for secondary info."
+        )
+
     scenes_json = []
     for scene in state.scenes:
         ts_sample = timestamps_to_dict_list(scene.timestamps[:20])
@@ -181,11 +204,13 @@ def _build_director_prompt(state: ProcExState) -> str:
         })
 
     return f"""Domain: {state.domain.value}
-Resolution: {state.resolution}
+Resolution: {state.resolution} ({aspect})
 
 {trigger_block}
 
 {manim_block}
+
+{zone_layout_note}
 
 MANIM STYLE GUIDE FOR THIS DOMAIN:
 {manim_style}
@@ -198,6 +223,9 @@ AVAILABLE MANIM ELEMENTS FOR THIS DOMAIN:
 
 CINEMATIC PALETTE:
 {json.dumps(CINEMATIC_PALETTE, indent=2)}
+
+AVAILABLE ZONES FOR zone_allocation ({aspect}):
+{chr(10).join(f'  {n}: {zones[n].description}' for n in zone_names)}
 
 ---
 SCENES TO DIRECT:

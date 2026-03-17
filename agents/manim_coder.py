@@ -35,15 +35,27 @@ from agents.base_agent import BaseAgent
 
 
 # ── File header injected at top of every generated scene ──────────────────────
-MANIM_HEADER = '''from manim import *
-from manim.utils.color import ManimColor
-import numpy as np
-
-{palette}
-
-config.background_color = BG
-config.frame_rate = 25
-'''
+def _make_manim_header(palette: str, res) -> str:
+    """
+    Build the Manim file header with correct canvas dimensions for the aspect.
+    For portrait (9:16): frame_width=8, frame_height=14, pixel dims swapped.
+    For landscape (16:9): frame_width=14, frame_height=8 (Manim defaults).
+    """
+    lines = [
+        "from manim import *",
+        "from manim.utils.color import ManimColor",
+        "import numpy as np",
+        "",
+        palette,
+        "",
+        f"config.background_color = BG",
+        f"config.frame_rate       = 25",
+        f"config.pixel_width      = {res.width}",
+        f"config.pixel_height     = {res.height}",
+        f"config.frame_width      = {res.manim_frame_width}",
+        f"config.frame_height     = {res.manim_frame_height}",
+    ]
+    return "\n".join(lines) + "\n"
 
 # ── System prompt ──────────────────────────────────────────────────────────────
 CODER_SYSTEM = """You are an expert Manim Community (v0.18+) code generator.
@@ -82,20 +94,7 @@ VGROUP vs GROUP — CRITICAL
 VGroup only accepts VMobject subclasses (Text, MathTex, Square, Circle,
 Line, Arrow, Dot, etc.). Use Group() when mixing unknown types.
 CORRECT: VGroup(Text("a"), MathTex(r"x^2"), Square())
-WRONG:   VGroup(some_generic_mobject)  ← crashes with TypeError
-
-LAYOUT RULES
-============
-L1. Frame: 14.22 wide x 8 tall. Keep x in [-5.5, 5.5], y in [-3.3, 3.3].
-L2. Clear screen between major sections:
-      self.play(FadeOut(Group(*self.mobjects)), run_time=0.5)
-L3. Text sizes: titles ≤44, body=32, captions=24, never >52.
-    Over 50 chars: Text("...", font_size=28, width=11)
-L4. MathTex with >2 terms: always .scale(0.85)
-L5. Multi-element layout: use Group/VGroup + .arrange(), not manual shift().
-L6. Never draw new content on top of existing — FadeOut first.
-L7. interpolate_color(BG, CYAN, 0.5) ← CORRECT (both are ManimColor objects)
-    interpolate_color("#0A0A0F", CYAN, 0.5) ← WRONG (string crashes)
+WRONG:   VGroup(some_generic_mobject)  <- crashes with TypeError
 
 ANIMATION STYLE
 ===============
@@ -107,6 +106,36 @@ ANIMATION STYLE
 OUTPUT: Return ONLY the class definition. No fences, no explanation.
 """
 
+# ── Layout rules per aspect (injected into per-scene prompt) ──────────────────
+LAYOUT_RULES_LANDSCAPE = """LAYOUT RULES (LANDSCAPE 16:9)
+============
+L1. Frame: 14 wide x 8 tall. Safe zone: x in [-5.5, 5.5], y in [-3.3, 3.3].
+L2. Clear screen between major sections:
+      self.play(FadeOut(Group(*self.mobjects)), run_time=0.5)
+L3. Text sizes: titles max 44, body=32, captions=24, never above 52.
+    Over 50 chars: Text("...", font_size=28, width=11)
+L4. MathTex with >2 terms: always .scale(0.85)
+L5. Multi-element layout: use Group/VGroup + .arrange(), not manual shift().
+L6. Never draw new content on top of existing -- FadeOut first.
+L7. interpolate_color(BG, CYAN, 0.5) <- CORRECT (both are ManimColor objects)
+    interpolate_color("#0A0A0F", CYAN, 0.5) <- WRONG (string crashes)"""
+
+LAYOUT_RULES_PORTRAIT = """LAYOUT RULES (PORTRAIT 9:16)
+============
+L1. Frame: 8 wide x 14 tall. Safe zone: x in [-3.5, 3.5], y in [-6.5, 6.5].
+    THIS IS A TALL NARROW CANVAS -- think phone screen, not widescreen TV.
+L2. Stack content VERTICALLY. Do NOT use side-by-side layouts -- there is no
+    horizontal room. Use VGroup(...).arrange(DOWN) as your primary layout.
+L3. Clear screen between major sections:
+      self.play(FadeOut(Group(*self.mobjects)), run_time=0.5)
+L4. Text sizes: titles max 40, body=28, captions=22, never above 48.
+    Wrap ALL Text objects: Text("...", font_size=28, width=6.5)
+L5. MathTex with >2 terms: always .scale(0.75) -- the canvas is narrower.
+L6. Multi-element layout: use VGroup + .arrange(DOWN, buff=0.4).
+    NEVER use .arrange(RIGHT) for main content -- not enough width.
+L7. Never draw new content on top of existing -- FadeOut first.
+L8. interpolate_color(BG, CYAN, 0.5) <- CORRECT (both are ManimColor objects)
+    interpolate_color("#0A0A0F", CYAN, 0.5) <- WRONG (string crashes)"""
 
 # ── Fallback: guaranteed-runnable cinematic title card ────────────────────────
 def _fallback_scene(class_name: str, scene: Scene) -> str:
@@ -137,6 +166,7 @@ def _build_coder_prompt(
     scene: Scene,
     skill: dict,
     error_context: str = "",
+    aspect: str = "16:9",
 ) -> str:
     """
     Build the ManimCoder prompt using anchor-driven timing.
@@ -155,10 +185,11 @@ def _build_coder_prompt(
     # ── Build binding zone contract ───────────────────────────────────────────
     zone_contract_section = ""
     if scene.zone_allocation:
-        from utils.spatial_grid import ZONES, zone_to_manim_position
+        from utils.spatial_grid import get_zones, zone_to_manim_position
+        zones = get_zones(aspect)
         contract_lines = []
         for element_label, zone_name in scene.zone_allocation.items():
-            zone = ZONES.get(zone_name)
+            zone = zones.get(zone_name)
             if not zone:
                 continue
             x, y = zone.manim_center
@@ -187,6 +218,9 @@ def _build_coder_prompt(
                 "- The contract defines peak-density positions; elements may animate\n"
                 "  IN from off-screen, but must LAND at their contracted coordinate\n"
             )
+
+    # ── Select layout rules for this aspect ───────────────────────────────────
+    layout_rules = LAYOUT_RULES_PORTRAIT if aspect == "9:16" else LAYOUT_RULES_LANDSCAPE
 
     # Extract anchors from this scene's word timestamps
     anchors = extract_animation_anchors(
@@ -239,6 +273,15 @@ VISUAL BRIEF (what to animate):
 {zone_contract_section}
 {anchor_block}
 {domain_decoder_section}
+{layout_rules}
+
+ANIMATION STYLE
+===============
+- Entrances: FadeIn(obj, shift=UP*0.3) or Write()
+- Exits: always explicit FadeOut() — never leave objects stranded
+- Camera moves require MovingCameraScene (change Scene → MovingCameraScene)
+- Transform(old, new) morphs in place
+
 DOMAIN ELEMENTS AVAILABLE:
 {chr(10).join(f"  - {e}" for e in manim_elements)}
 
@@ -254,12 +297,17 @@ class ManimCoder(BaseAgent):
         manim_dir = self.cfg.dirs["manim"]
         os.makedirs(manim_dir, exist_ok=True)
 
+        from config import RESOLUTIONS
+        res    = RESOLUTIONS.get(state.resolution, RESOLUTIONS["1080p"])
+        aspect = res.aspect_ratio
+
         targets = [
             s for s in state.scenes
             if s.visual_strategy in (VisualStrategy.MANIM, VisualStrategy.TEXT_ANIMATION)
         ]
 
-        self._log(f"Generating Manim code for {len(targets)} scenes...")
+        self._log(f"Generating Manim code for {len(targets)} scenes "
+                  f"(aspect={aspect}, {res.width}x{res.height})...")
 
         for scene in targets:
             class_name             = f"Scene{scene.id:02d}"
@@ -267,8 +315,8 @@ class ManimCoder(BaseAgent):
             scene_file             = os.path.join(manim_dir, f"scene_{scene.id:02d}.py")
             scene.manim_file_path  = scene_file
 
-            code = self._generate_scene_code(scene, state.skill_pack)
-            self._write_scene_file(scene_file, code)
+            code = self._generate_scene_code(scene, state.skill_pack, res=res, aspect=aspect)
+            self._write_scene_file(scene_file, code, res=res)
             self._log(f"Scene {scene.id} -> {scene_file}")
 
         return state
@@ -280,19 +328,16 @@ class ManimCoder(BaseAgent):
         scene: Scene,
         skill_pack: dict,
         render_error: str,
+        res=None,
+        aspect: str = "16:9",
     ) -> bool:
-        """
-        Regenerate and rewrite the .py file for a scene that crashed at render.
-        Injects the Manim runtime traceback so the LLM self-corrects.
-        Returns True if regenerated successfully, False if fell back to title card.
-        """
         self._log(f"Scene {scene.id}: render failed — regenerating with error context...")
         error_summary = self._summarise_render_error(render_error)
         code          = self._generate_scene_code(
-            scene, skill_pack, initial_error=error_summary
+            scene, skill_pack, initial_error=error_summary, res=res, aspect=aspect
         )
         is_fallback = f"Scene {scene.id}" in code[:80]
-        self._write_scene_file(scene.manim_file_path, code)
+        self._write_scene_file(scene.manim_file_path, code, res=res)
 
         if is_fallback:
             self._log(f"Scene {scene.id}: regeneration fell back to title card")
@@ -300,22 +345,26 @@ class ManimCoder(BaseAgent):
         self._log(f"Scene {scene.id}: regenerated OK")
         return True
 
-    # ── Code generation ────────────────────────────────────────────────────────
-
     def _generate_scene_code(
         self,
         scene: Scene,
         skill: dict,
         initial_error: str = "",
+        res=None,
+        aspect: str = "16:9",
     ) -> str:
-        header     = MANIM_HEADER.format(palette=MANIM_PALETTE_BLOCK)
+        from config import RESOLUTIONS, MANIM_PALETTE_BLOCK
+        if res is None:
+            res = RESOLUTIONS["1080p"]
         last_error = initial_error
 
         for attempt in range(self.cfg.max_llm_retries):
             try:
                 raw  = self.llm.complete(
                     CODER_SYSTEM,
-                    _build_coder_prompt(scene, skill, error_context=last_error),
+                    _build_coder_prompt(scene, skill,
+                                        error_context=last_error,
+                                        aspect=aspect),
                     json_mode=False,
                     max_tokens=6144,
                     temperature=0.3,
@@ -329,6 +378,7 @@ class ManimCoder(BaseAgent):
                     self._log(f"Scene {scene.id} attempt {attempt+1}: {last_error}")
                     continue
 
+                header    = _make_manim_header(MANIM_PALETTE_BLOCK, res)
                 syntax_ok, syntax_err = self._syntax_check(header, code)
                 if not syntax_ok:
                     last_error = f"Python syntax error:\n{syntax_err}"
@@ -347,8 +397,11 @@ class ManimCoder(BaseAgent):
 
     # ── File writer ────────────────────────────────────────────────────────────
 
-    def _write_scene_file(self, scene_file: str, code: str) -> None:
-        full = MANIM_HEADER.format(palette=MANIM_PALETTE_BLOCK) + "\n\n" + code
+    def _write_scene_file(self, scene_file: str, code: str, res=None) -> None:
+        from config import RESOLUTIONS, MANIM_PALETTE_BLOCK
+        if res is None:
+            res = RESOLUTIONS["1080p"]
+        full = _make_manim_header(MANIM_PALETTE_BLOCK, res) + "\n\n" + code
         with open(scene_file, "w", encoding="utf-8") as f:
             f.write(full)
 
@@ -360,7 +413,7 @@ class ManimCoder(BaseAgent):
         raw = re.sub(r"```\s*$",             "", raw.strip(), flags=re.MULTILINE)
         skip = {
             "from manim import", "import manim", "import numpy",
-            "from manim.utils", "config.background", "config.frame_rate",
+            "from manim.utils", "config.",   # strip ALL config.* lines — header owns them
         }
         cleaned = [
             l for l in raw.splitlines()

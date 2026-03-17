@@ -146,8 +146,9 @@ class ImageGenAgent(BaseAgent):
         additions = []
         if nano_res not in base:
             additions.append(f"{nano_res} resolution")
-        if "16:9" not in base:
-            additions.append("16:9 aspect ratio")
+        aspect = res.aspect_ratio
+        if aspect not in base:
+            additions.append(f"{aspect} aspect ratio")
         if scene.needs_labels and "label" not in base.lower():
             label_str = ", ".join(scene.label_list[:8])
             additions.append(f"clearly labeled callouts for: {label_str}")
@@ -156,3 +157,4 @@ class ImageGenAgent(BaseAgent):
             base += ". " + ". ".join(additions) + "."
 
         return base
+

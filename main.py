@@ -8,12 +8,13 @@ Usage:
 import argparse
 import os
 import sys
+
 # Load .env file if present
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
-    pass   # dotenv not installed — keys must be set in environment manually
+    pass
 
 # ── Force UTF-8 output on Windows (cmd/PowerShell default to cp1252) ──────────
 if sys.platform == "win32":
@@ -52,9 +53,9 @@ Examples:
     parser.add_argument(
         "--resolution", "-r",
         type=str,
-        choices=["720p", "1080p", "4K"],
+        choices=["720p", "1080p", "4K", "720p_v", "1080p_v", "4K_v"],
         default="1080p",
-        help="Output video resolution (default: 1080p)"
+        help="Output resolution: 720p/1080p/4K (landscape) or 720p_v/1080p_v/4K_v (portrait 9:16)"
     )
     parser.add_argument(
         "--minutes", "-m",
@@ -113,20 +114,20 @@ Examples:
         print("[ProcEx] No --input provided — entering deep research mode...")
         from agents.deep_research import DeepResearchAgent
 
-        research = DeepResearchAgent(cfg, pipeline.llm)  # reuse orchestrator's llm
+        research   = DeepResearchAgent(cfg, pipeline.llm)  # reuse orchestrator's llm
         input_path = research.research(
-            topic=args.topic,
-            target_minutes=args.minutes,
+            topic          = args.topic,
+            target_minutes = args.minutes,
         )
         print(f"[ProcEx] ✓ Research report generated: {input_path}")
         print(f"[ProcEx] ▶ Handing off to video pipeline...")
 
     output_path = pipeline.run(
-        input_path=input_path,
-        topic_hint=args.topic,
-        resolution=args.resolution,
-        target_minutes=args.minutes,
-        resume_checkpoint=args.resume,
+        input_path          = input_path,
+        topic_hint          = args.topic,
+        resolution          = args.resolution,
+        target_minutes      = args.minutes,
+        resume_checkpoint   = args.resume,
     )
 
     print(f"\n✅ Done! Video saved to: {output_path}")

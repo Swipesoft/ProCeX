@@ -123,8 +123,11 @@ class RendererAgent(BaseAgent):
             return clip_path, error
 
         # ── VLM Critic inspection ─────────────────────────────────────────────
+        from config import RESOLUTIONS
+        res    = RESOLUTIONS.get(resolution, RESOLUTIONS["1080p"])
+        aspect = res.aspect_ratio
         try:
-            result: CriticResult = critic.inspect(clip_path, scene)
+            result: CriticResult = critic.inspect(clip_path, scene, aspect=aspect)
         except Exception as e:
             self._log(f"Scene {scene.id}: critic error (non-fatal): {e}")
             return clip_path, None

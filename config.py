@@ -23,10 +23,26 @@ class ResolutionConfig:
 
     @property
     def aspect_ratio(self) -> str:
-        return "16:9"
+        """Computed from actual dimensions — works for both 16:9 and 9:16."""
+        return "9:16" if self.height > self.width else "16:9"
+
+    @property
+    def is_portrait(self) -> bool:
+        return self.height > self.width
+
+    @property
+    def manim_frame_width(self) -> float:
+        """Manim canvas width in units. Portrait flips the 14×8 default."""
+        return 8.0 if self.is_portrait else 14.0
+
+    @property
+    def manim_frame_height(self) -> float:
+        """Manim canvas height in units. Portrait flips the 14×8 default."""
+        return 14.0 if self.is_portrait else 8.0
 
 
 RESOLUTIONS: dict[str, ResolutionConfig] = {
+    # ── Landscape 16:9 ────────────────────────────────────────────────────────
     "720p": ResolutionConfig(
         width=1280, height=720,
         manim_flag="-ql",
@@ -45,6 +61,28 @@ RESOLUTIONS: dict[str, ResolutionConfig] = {
         width=3840, height=2160,
         manim_flag="-qk",
         ffmpeg_scale="3840:2160",
+        nano_res="4K",
+        zoompan_frames=25,
+    ),
+    # ── Portrait 9:16 (vertical / mobile / Reels / Shorts) ───────────────────
+    "720p_v": ResolutionConfig(
+        width=720, height=1280,
+        manim_flag="-ql",
+        ffmpeg_scale="720:1280",
+        nano_res="1K",
+        zoompan_frames=25,
+    ),
+    "1080p_v": ResolutionConfig(
+        width=1080, height=1920,
+        manim_flag="-qh",
+        ffmpeg_scale="1080:1920",
+        nano_res="2K",
+        zoompan_frames=25,
+    ),
+    "4K_v": ResolutionConfig(
+        width=2160, height=3840,
+        manim_flag="-qk",
+        ffmpeg_scale="2160:3840",
         nano_res="4K",
         zoompan_frames=25,
     ),
@@ -95,8 +133,8 @@ class ProcExConfig:
 
     # ── LLM Models (text) ─────────────────────
     # Fallback chain: Claude → Gemini → OpenAI
-    claude_model:        str = "claude-sonnet-4-6" #"claude-opus-4-6" #"claude-sonnet-4-6"
-    gemini_text_model:   str = "gemini-3-flash-preview" #"gemini-3-flash-preview"
+    claude_model:        str = "claude-sonnet-4-6" # "claude-opus-4-6"
+    gemini_text_model:   str = "gemini-3-flash-preview"
     openai_model:        str = "gpt-5.4-2026-03-05"
 
     # ── Per-agent primary LLM ────────────────────────────────────────────────
@@ -187,4 +225,3 @@ class ProcExConfig:
         if not self.elevenlabs_api_key and not self.openai_api_key:
             issues.append("No TTS key set — set OPENAI_API_KEY (recommended) or ELEVENLABS_API_KEY")
         return issues
-
