@@ -47,6 +47,7 @@ from state import ProcExState, Scene, VisualStrategy
 from utils.llm_client import LLMClient
 from utils.spatial_grid import (
     ZONES,
+    get_zones,
     draw_grid_overlay,
     frame_to_base64,
     zone_manifest,
@@ -59,7 +60,7 @@ from utils.spatial_grid import (
 CRITIC_DENSITY_THRESHOLD = 2   # element count >= this triggers critic (was 3)
 CRITIC_MAX_PATCHES       = 5   # max correction actions per scene
 PATCH_MAX_TOKENS         = 4096
-VISION_MAX_TOKENS        = 1024
+VISION_MAX_TOKENS        = 4096   # needs room for full JSON with issues list
 KEYFRAME_OFFSETS         = [0.25, 0.50, 0.75]  # sample at 25%, 50%, 75% of clip
 
 
@@ -101,12 +102,7 @@ VISION_USER_TMPL = """\
 SCENE CONTEXT
 =============
 Title:       {title}
-Description: {description}
 Topic:       {narration_hint}
-
-ZONE REFERENCE TABLE
-====================
-{zone_manifest}
 
 TASK
 ====
@@ -281,26 +277,42 @@ class VLMCritic(BaseAgent):
         ]
         self._log(
             f"Scene {scene.id}: {len(issues)} issue(s) identified — "
-            + ", ".join(f"[{v.severity}] {v.element} {v.from_zone}→{v.to_zone}" for v in issues)
+            + ", ".join(f"[{v.severity}] {v.element} {v.from_zone}\u2192{v.to_zone}" for v in issues)
         )
 
-        # ── Split recommendation ──────────────────────────────────────────────
-        if vision_result.get("split_recommended", False):
-            self._log(
-                f"Scene {scene.id}: split recommended — "
-                f"density={density}/10, reason='{reasoning}'"
-            )
+        split_recommended = vision_result.get("split_recommended", False)
+
+        # ── Guard: no point patching if no actionable issues ─────────────────
+        if not issues:
+            if split_recommended:
+                self._log(
+                    f"Scene {scene.id}: split recommended (density={density}/10) "
+                    f"but no patchable issues — flagging for orchestrator"
+                )
+                return CriticResult(
+                    status = "split_needed",
+                    reason = reasoning or "density overflow, no patchable issues",
+                )
+            self._log(f"Scene {scene.id}: collision detected but no actionable issues — passing as-is")
             return CriticResult(
-                status  = "split_needed",
-                issues  = issues,
-                reason  = reasoning or "density overflow",
+                status = "ok",
+                reason = "collision detected but no issues to fix",
             )
 
         # ── Stage 2: Claude patches the code ─────────────────────────────────
+        # Patch first even if split is recommended — corrections may reduce
+        # density enough that the split becomes unnecessary.
         self._log(f"Scene {scene.id}: [stage 2] sending {len(issues)} correction(s) to Claude patcher...")
         patched = self._run_code_patch(code, issues, scene, aspect=aspect)
         if not patched or patched == code:
             self._log(f"Scene {scene.id}: patch produced no change — passing as-is")
+            if split_recommended:
+                self._log(f"Scene {scene.id}: split still recommended after no-op patch (density={density}/10)")
+                return CriticResult(
+                    status = "split_needed",
+                    issues = issues,
+                    reason = reasoning or "density overflow",
+                )
             return CriticResult(
                 status  = "ok",
                 issues  = issues,
@@ -318,13 +330,17 @@ class VLMCritic(BaseAgent):
                 return CriticResult(status="ok", reason=f"file write failed: {e}")
 
         self._log(
-            f"Scene {scene.id}: {len(issues)} collision(s) patched → queued for re-render"
+            f"Scene {scene.id}: {len(issues)} collision(s) patched \u2192 queued for re-render"
+            + (f" (split also recommended — density={density}/10)" if split_recommended else "")
         )
         return CriticResult(
             status       = "patched",
             issues       = issues,
             patched_code = patched,
-            reason       = reasoning or "collisions corrected",
+            reason       = (
+                f"patched+split_recommended:{reasoning}" if split_recommended
+                else reasoning or "collisions corrected"
+            ),
         )
 
     # ── Gate ──────────────────────────────────────────────────────────────────
@@ -332,19 +348,35 @@ class VLMCritic(BaseAgent):
     def _should_inspect(self, scene: Scene) -> bool:
         """
         Run the Critic only when:
-          - Scene is Manim-based (TEXT_ANIMATION, MANIM, or HYBRID)
-          - Element count exceeds threshold, OR scene is HYBRID
-            (overlays always risk collision)
+          - Scene is Manim-based (TEXT_ANIMATION, MANIM)
+          - Element count exceeds threshold
+          - Not a fallback title card (those have nothing to fix)
         """
         manim_types = {
             VisualStrategy.MANIM,
             VisualStrategy.TEXT_ANIMATION,
         }
         if scene.visual_strategy not in manim_types:
+            self._log(f"Scene {scene.id}: skipped (strategy={scene.visual_strategy.value})")
             return False
 
         element_count = getattr(scene, "element_count", 0) or 0
-        return element_count >= CRITIC_DENSITY_THRESHOLD
+        if element_count < CRITIC_DENSITY_THRESHOLD:
+            self._log(f"Scene {scene.id}: skipped (elements={element_count}, threshold={CRITIC_DENSITY_THRESHOLD})")
+            return False
+
+        # Skip if this is a fallback title card — clip is too short to be real Manim
+        if scene.manim_file_path and os.path.exists(scene.manim_file_path):
+            try:
+                with open(scene.manim_file_path, encoding="utf-8") as f:
+                    code = f.read()
+                if "fallback" in code.lower() or (code.count("self.play") <= 2 and "freeze" not in code):
+                    pass  # real scene — continue
+            except Exception:
+                pass
+
+        self._log(f"Scene {scene.id}: inspecting (strategy={scene.visual_strategy.value}, elements={element_count})")
+        return True
 
     # ── Keyframe extraction ───────────────────────────────────────────────────
 
@@ -428,11 +460,15 @@ class VLMCritic(BaseAgent):
         """
         Send annotated frame to Gemini vision. Returns parsed dict or None.
         """
+        # Compact zone list — names only, saves tokens vs full manifest table
+        zones      = get_zones(aspect)
+        zone_names = ", ".join(zones.keys())
+
         user_prompt = VISION_USER_TMPL.format(
-            title          = scene.title or "Untitled Scene",
-            description    = scene.description or "No description available",
-            narration_hint = (scene.narration_text or "")[:300],
-            zone_manifest  = zone_manifest(aspect),
+            title          = f"Scene {scene.id}",
+            description    = scene.visual_reasoning or (scene.narration_text or "")[:120],
+            narration_hint = (scene.narration_text or "")[:200],
+            zone_manifest  = f"Available zones: {zone_names}",
         )
 
         try:
@@ -445,14 +481,45 @@ class VLMCritic(BaseAgent):
                 temperature      = 0.1,
                 primary_provider = "gemini",
             )
-            # Strip any accidental markdown fences
+            # Strip markdown fences
             raw = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
             raw = re.sub(r"```\s*$",           "", raw.strip(), flags=re.MULTILINE)
-            return json.loads(raw.strip())
+            raw = raw.strip()
 
-        except json.JSONDecodeError as e:
-            self._log(f"Vision JSON parse error: {e}")
-            return None
+            # Direct parse
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                pass
+
+            # Repair: remove trailing commas, try closing truncated JSON
+            import re as _re
+            cleaned = _re.sub(r",\s*([}\]])", r"\1", raw)
+            for suffix in ["", '"', '"}', '"}}', '"]}', ']}', '}']:
+                try:
+                    result = json.loads(cleaned + suffix)
+                    if isinstance(result, dict):
+                        self._log(f"Vision JSON repaired with suffix={repr(suffix)}")
+                        return result
+                except json.JSONDecodeError:
+                    pass
+
+            # Last resort: extract boolean fields via regex
+            collision = bool(_re.search(r'"collision_detected"\s*:\s*true', cleaned, _re.I))
+            split     = bool(_re.search(r'"split_recommended"\s*:\s*true', cleaned, _re.I))
+            score_m   = _re.search(r'"density_score"\s*:\s*(\d+)', cleaned)
+            score     = int(score_m.group(1)) if score_m else 0
+            self._log(f"Vision JSON fallback parse: collision={collision} score={score}")
+            # Never trust split_recommended from a truncated response — no issues were parsed
+            # so we can't verify it. Return collision only if score is very high.
+            return {
+                "collision_detected": collision and score >= 7,
+                "split_recommended":  False,   # don't split on truncated evidence
+                "density_score":      score,
+                "issues":             [],
+                "reasoning":          "Partial parse — truncated response",
+            }
+
         except Exception as e:
             self._log(f"Vision analysis error: {e}")
             return None

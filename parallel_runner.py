@@ -110,12 +110,17 @@ def run_tts_and_director_parallel(
         t1.join(timeout=5); t2.join(timeout=5)
         raise
 
-    # Report any errors — TTS failure is fatal (no timestamps = no anchors)
+    # Report any errors
     for agent_name, exc in errors:
         print(f"[Parallel] ERROR {agent_name}: {exc}")
+        import traceback
+        traceback.print_exc()
     tts_errors = [e for a, e in errors if a == "TTSAgent"]
+    dir_errors = [e for a, e in errors if a == "VisualDirector"]
     if tts_errors:
         raise RuntimeError(f"TTSAgent failed: {tts_errors[0]}")
+    if dir_errors:
+        print(f"[Parallel] ⚠ VisualDirector failed: {dir_errors[0]} — using default MANIM for all scenes")
 
     # ── Merge TTS results onto original state ─────────────────────────────
     if tts_result[0]:
@@ -129,10 +134,36 @@ def run_tts_and_director_parallel(
 
     # ── Merge VisualDirector results onto original state ──────────────────
     if dir_result[0]:
-        _merge_scene_fields(state, dir_result[0].scenes, [
-            "visual_strategy", "visual_prompt", "visual_reasoning",
-            "needs_labels", "label_list",
-        ])
+        dir_scenes = dir_result[0].scenes
+        print(f"[Parallel] Director returned {len(dir_scenes)} scenes "
+              f"(original: {len(state.scenes)})")
+
+        # Check if subscene expansion happened (more scenes returned than started)
+        if len(dir_scenes) > len(state.scenes):
+            # Replace state.scenes with the expanded list entirely.
+            # Then back-fill TTS fields from the original scenes by matching
+            # parent_scene_id (for subscene beats) or scene.id (for unchanged scenes).
+            tts_by_id = {s.id: s for s in tts_result[0].scenes} if tts_result[0] else {}
+
+            for scene in dir_scenes:
+                # Use parent_scene_id to find TTS data for subscene beats
+                tts_source_id = scene.parent_scene_id if scene.parent_scene_id else scene.id
+                tts_src = tts_by_id.get(tts_source_id)
+                if tts_src:
+                    scene.tts_audio_path = tts_src.tts_audio_path
+                    scene.tts_duration   = scene.duration_seconds  # proportional slice
+                    # Timestamps already sliced by _expand_subscenes
+
+            state.scenes = dir_scenes
+            print(f"[Parallel] VisualDirector expanded {len(tts_by_id)} → "
+                  f"{len(dir_scenes)} scenes (subscene beats)")
+        else:
+            # No expansion — simple field merge
+            _merge_scene_fields(state, dir_scenes, [
+                "visual_strategy", "visual_prompt", "visual_reasoning",
+                "needs_labels", "label_list", "element_count", "zone_allocation",
+                "parent_scene_id", "subscene_index",
+            ])
 
     print("[Parallel] ✓ Stage A complete")
     return state
@@ -313,19 +344,13 @@ def run_generation_render_pipeline(
     # ── Renderer worker ───────────────────────────────────────────────────
 
     def renderer_worker(wid: int):
-        """
-        Fix for Problem 5: renderer workers exit ONLY via sentinel, never by
-        checking done_count. The main thread sends the sentinel after all scenes
-        are confirmed done — so workers can't exit early while image scenes are
-        still being generated.
-        """
-        while True:
+        while not _shutdown.is_set():
             try:
                 task = render_queue.get(timeout=_QUEUE_TIMEOUT)
             except Empty:
                 continue
             if task is _DONE:
-                render_queue.put(_DONE)   # fan-out to sibling workers
+                render_queue.put(_DONE)
                 break
 
             scene = task.scene
@@ -340,26 +365,25 @@ def run_generation_render_pipeline(
                 mark_done(scene, clip_path)
 
             elif task.attempt < REGEN_RETRIES:
-                # ── Retry with error context ──────────────────────────────
-                next_attempt = task.attempt + 1
+                next_attempt     = task.attempt + 1
+                next_img_attempt = getattr(scene, "_img_attempt", 0) + 1
                 log(f"Renderer-{wid}: Scene {scene.id} failed "
                     f"({next_attempt}/{REGEN_RETRIES+1}) — requeueing")
 
                 if scene.visual_strategy in (VisualStrategy.MANIM,
-                                             VisualStrategy.TEXT_ANIMATION,
-                                             ):
-                    # Re-generate Manim code with the error traceback
+                                             VisualStrategy.TEXT_ANIMATION):
                     code_queue.put(SceneTask(
                         scene        = scene,
                         attempt      = next_attempt,
                         render_error = coder._summarise_render_error(error or ""),
                     ))
                 else:
-                    # IMAGE_GEN render fail — retry image generation itself
-                    log(f"Renderer-{wid}: Scene {scene.id} IMAGE_GEN render fail "
-                        f"— re-generating image (img_attempt={task.image_attempt+1})")
-                    if task.image_attempt < cfg.max_llm_retries:
-                        # Re-queue as image work
+                    # IMAGE_GEN render fail — cap image retries to avoid infinite loop
+                    if next_img_attempt <= cfg.max_llm_retries:
+                        log(f"Renderer-{wid}: Scene {scene.id} IMAGE_GEN render fail "
+                            f"(error: {str(error)[:200]}) "
+                            f"— re-generating image (img_attempt={next_img_attempt})")
+                        scene._img_attempt = next_img_attempt  # track on scene object
                         t = threading.Thread(
                             target=image_worker,
                             args=(wid, scene),
@@ -367,16 +391,16 @@ def run_generation_render_pipeline(
                         )
                         t.start()
                     else:
-                        # Image retries also exhausted
-                        log(f"Renderer-{wid}: Scene {scene.id} — degrading to TEXT_ANIMATION")
+                        log(f"Renderer-{wid}: Scene {scene.id} — image retries exhausted, "
+                            f"degrading to TEXT_ANIMATION")
                         scene.visual_strategy = VisualStrategy.TEXT_ANIMATION
                         code_queue.put(SceneTask(scene=scene, attempt=next_attempt))
 
             else:
-                # ── Emergency fallback ────────────────────────────────────
                 log(f"Renderer-{wid}: Scene {scene.id} — emergency fallback")
                 fb = renderer.render_emergency(scene, state.resolution, scenes_dir)
                 mark_done(scene, fb)
+
 
     # ── Seed queues ───────────────────────────────────────────────────────
 

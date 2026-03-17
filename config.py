@@ -165,7 +165,7 @@ class ProcExConfig:
     # ── Image Generation (NanoBanana) ─────────
     # Pro  → detailed anatomy, labeled diagrams, search grounding
     # Fast → background images, simpler visuals, hybrid scenes
-    nano_pro_model:      str = "gemini-3-pro-image-preview"
+    nano_pro_model:      str = "gemini-3.1-flash-image-preview"# "gemini-3-pro-image-preview"
     nano_fast_model:     str = "gemini-3.1-flash-image-preview"
 
     # ── ElevenLabs (legacy) ───────────────────

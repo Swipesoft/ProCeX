@@ -29,46 +29,74 @@ def image_to_video_clip(
 ) -> str:
     """
     Render a static image into a video clip with Ken Burns motion.
-
-    Args:
-        image_path:  path to PNG/JPG from NanoBanana
-        duration:    clip length in seconds (matches scene TTS duration)
-        output_path: output .mp4 path
-        resolution:  "720p" | "1080p" | "4K"
-        effect:      one of EFFECTS keys
-        fps:         frames per second
-
-    Returns:
-        output_path on success
+    Scales input image to safe dimensions before zoompan to prevent
+    filter failures with arbitrary NanoBanana output sizes.
     """
     res      = RESOLUTIONS[resolution]
     n_frames = int(duration * fps)
     zp_expr  = EFFECTS.get(effect, EFFECTS["zoom_in"])
 
-    # Full zoompan expression: effect + dimensions + duration
-    zoompan = (
-        f"zoompan={zp_expr}"
-        f":d={n_frames}"
-        f":s={res.width}x{res.height}"
-        f":fps={fps}"
+    # Scale input to 2× output size before zoompan — zoompan needs headroom
+    # to zoom/pan without hitting the edge of the source image.
+    # pad to even dimensions, force yuv420p throughout.
+    scale_w = res.width  * 2
+    scale_h = res.height * 2
+
+    vf = (
+        f"scale={scale_w}:{scale_h}:force_original_aspect_ratio=increase,"
+        f"crop={scale_w}:{scale_h},"
+        f"zoompan={zp_expr}:d={n_frames}:s={res.width}x{res.height}:fps={fps},"
+        f"format=yuv420p"
     )
 
     cmd = [
         "ffmpeg", "-y",
         "-loop", "1",
         "-i", image_path,
-        "-vf", f"{zoompan},format=yuv420p",
+        "-vf", vf,
         "-t", str(duration),
         "-c:v", "libx264",
         "-preset", "fast",
         "-crf", "18",
+        "-pix_fmt", "yuv420p",
         output_path,
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    result = subprocess.run(
+        cmd, capture_output=True, text=True,
+        timeout=120,
+        encoding="utf-8", errors="replace",
+    )
 
     if result.returncode != 0:
-        raise RuntimeError(f"Ken Burns FFmpeg failed:\n{result.stderr}")
+        # zoompan failed — fall back to simple scale+fade (no motion)
+        vf_simple = (
+            f"scale={res.width}:{res.height}:force_original_aspect_ratio=decrease,"
+            f"pad={res.width}:{res.height}:-1:-1:color=black,"
+            f"format=yuv420p"
+        )
+        cmd_simple = [
+            "ffmpeg", "-y",
+            "-loop", "1",
+            "-i", image_path,
+            "-vf", vf_simple,
+            "-t", str(duration),
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "18",
+            "-pix_fmt", "yuv420p",
+            output_path,
+        ]
+        result2 = subprocess.run(
+            cmd_simple, capture_output=True, text=True,
+            timeout=120,
+            encoding="utf-8", errors="replace",
+        )
+        if result2.returncode != 0:
+            raise RuntimeError(
+                f"Ken Burns FFmpeg failed:\n{result.stderr[-500:]}\n"
+                f"Fallback also failed:\n{result2.stderr[-300:]}"
+            )
 
     return output_path
 
