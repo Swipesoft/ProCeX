@@ -30,6 +30,8 @@ numpy>=1.24.0
 
 # Report lab for PDF generation
 reportlab>=4.0
+python-dotenv
+manim
 # ── Optional but recommended ──────────────────────────────────────────────────
 # For async TTS in batch:
 # aiohttp>=3.9.0

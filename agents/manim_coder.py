@@ -35,12 +35,14 @@ from agents.base_agent import BaseAgent
 
 
 # ── File header injected at top of every generated scene ──────────────────────
-def _make_manim_header(palette: str, res) -> str:
+def _make_manim_header(palette: str, res, transparent: bool = False) -> str:
     """
     Build the Manim file header with correct canvas dimensions for the aspect.
     For portrait (9:16): frame_width=8, frame_height=14, pixel dims swapped.
     For landscape (16:9): frame_width=14, frame_height=8 (Manim defaults).
+    transparent=True: sets background to BLACK so --transparent render works correctly.
     """
+    bg = "BLACK" if transparent else "BG"
     lines = [
         "from manim import *",
         "from manim.utils.color import ManimColor",
@@ -48,7 +50,7 @@ def _make_manim_header(palette: str, res) -> str:
         "",
         palette,
         "",
-        f"config.background_color = BG",
+        f"config.background_color = {bg}",
         f"config.frame_rate       = 25",
         f"config.pixel_width      = {res.width}",
         f"config.pixel_height     = {res.height}",
@@ -222,6 +224,7 @@ def _build_coder_prompt(
     # ── Select layout rules for this aspect ───────────────────────────────────
     layout_rules = LAYOUT_RULES_PORTRAIT if aspect == "9:16" else LAYOUT_RULES_LANDSCAPE
 
+
     # Extract anchors from this scene's word timestamps
     anchors = extract_animation_anchors(
         timestamps    = scene.timestamps,
@@ -263,7 +266,6 @@ Your job is to decode it into the canonical visual form for this domain.
 scene_class_name: {scene.manim_class_name}
 scene_id:         {scene.id}
 duration_seconds: {scene.duration_seconds:.2f}
-
 NARRATION (what the narrator says — this is the audio track):
 {scene.narration_text}
 
@@ -334,7 +336,8 @@ class ManimCoder(BaseAgent):
         self._log(f"Scene {scene.id}: render failed — regenerating with error context...")
         error_summary = self._summarise_render_error(render_error)
         code          = self._generate_scene_code(
-            scene, skill_pack, initial_error=error_summary, res=res, aspect=aspect
+            scene, skill_pack, initial_error=error_summary,
+            res=res, aspect=aspect
         )
         is_fallback = f"Scene {scene.id}" in code[:80]
         self._write_scene_file(scene.manim_file_path, code, res=res)
@@ -364,7 +367,8 @@ class ManimCoder(BaseAgent):
                     CODER_SYSTEM,
                     _build_coder_prompt(scene, skill,
                                         error_context=last_error,
-                                        aspect=aspect),
+                                        aspect=aspect,
+),
                     json_mode=False,
                     max_tokens=6144,
                     temperature=0.3,
@@ -394,8 +398,6 @@ class ManimCoder(BaseAgent):
 
         self._log(f"Scene {scene.id}: all attempts failed — fallback title card")
         return _fallback_scene(scene.manim_class_name, scene)
-
-    # ── File writer ────────────────────────────────────────────────────────────
 
     def _write_scene_file(self, scene_file: str, code: str, res=None) -> None:
         from config import RESOLUTIONS, MANIM_PALETTE_BLOCK

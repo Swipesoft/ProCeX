@@ -163,7 +163,7 @@ class AssemblerAgent(BaseAgent):
 
         if abs(gap) < 0.08:
             # Already matches — just normalize and mux
-            vf = f"{scale_filter}fps=25" if scale_filter else "fps=25"
+            vf = f"{scale_filter}fps=25,format=yuv420p" if scale_filter else "fps=25,format=yuv420p"
             cmd = [
                 "ffmpeg", "-y",
                 "-i", clip_path, "-i", audio_path,
@@ -184,7 +184,7 @@ class AssemblerAgent(BaseAgent):
             )
             vf = (
                 f"{scale_filter}"
-                f"fps=25,"
+                f"fps=25,format=yuv420p,"
                 f"tpad=stop_mode=clone:stop_duration={gap:.4f}"
             )
             cmd = [
@@ -205,7 +205,7 @@ class AssemblerAgent(BaseAgent):
                 f"Scene {scene.id}: clip long by {-gap:.2f}s — "
                 "trimming to audio duration"
             )
-            vf = f"{scale_filter}fps=25" if scale_filter else "fps=25"
+            vf = f"{scale_filter}fps=25,format=yuv420p" if scale_filter else "fps=25,format=yuv420p"
             cmd = [
                 "ffmpeg", "-y",
                 "-i", clip_path, "-i", audio_path,
@@ -218,7 +218,7 @@ class AssemblerAgent(BaseAgent):
                 seg_path,
             ]
 
-        timeout = max(120, int(audio_dur * 10))
+        timeout = max(120, int(audio_dur * 20))  # raised from *10 — Windows overhead
         result  = subprocess.run(
             cmd, capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=timeout,

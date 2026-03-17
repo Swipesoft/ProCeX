@@ -1,5 +1,6 @@
 domain: ML_MATH
 display_name: "Machine Learning & Mathematics"
+image_gen_enabled: false   # semantic reasoning gate
 
 # Default visual strategy for most scenes
 default_visual_strategy: MANIM

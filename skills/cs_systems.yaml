@@ -1,5 +1,6 @@
 domain: CS_SYSTEMS
 display_name: "Computer Science & Systems"
+image_gen_enabled: false   # semantic reasoning gate
 
 default_visual_strategy: MANIM
 image_gen_triggers: []   # CS always Manim

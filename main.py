@@ -8,13 +8,8 @@ Usage:
 import argparse
 import os
 import sys
-
-# Load .env file if present
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
+from dotenv import load_dotenv
+load_dotenv()
 
 # ── Force UTF-8 output on Windows (cmd/PowerShell default to cp1252) ──────────
 if sys.platform == "win32":
@@ -122,13 +117,20 @@ Examples:
         print(f"[ProcEx] ✓ Research report generated: {input_path}")
         print(f"[ProcEx] ▶ Handing off to video pipeline...")
 
-    output_path = pipeline.run(
-        input_path          = input_path,
-        topic_hint          = args.topic,
-        resolution          = args.resolution,
-        target_minutes      = args.minutes,
-        resume_checkpoint   = args.resume,
-    )
+    try:
+        output_path = pipeline.run(
+            input_path          = input_path,
+            topic_hint          = args.topic,
+            resolution          = args.resolution,
+            target_minutes      = args.minutes,
+            resume_checkpoint   = args.resume,
+        )
+    except KeyboardInterrupt:
+        print("\n\n[ProcEx] ⚠ Interrupted by user — saving checkpoint...")
+        print("[ProcEx] Resume with:")
+        slug = args.topic.lower().replace(" ", "_")[:50] if args.topic else "run"
+        print(f"  python main.py --resume output/checkpoints/{slug}_checkpoint.json")
+        sys.exit(0)
 
     print(f"\n✅ Done! Video saved to: {output_path}")
     return 0

@@ -1,5 +1,6 @@
 domain: MEDICAL
 display_name: "Medical & Anatomy"
+image_gen_enabled: true   # semantic reasoning gate
 
 default_visual_strategy: MANIM   # DEFAULT is still Manim — image gen only when anatomy needed
 

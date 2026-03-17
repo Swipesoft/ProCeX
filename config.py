@@ -191,6 +191,7 @@ class ProcExConfig:
     manim_timeout_secs:  int   = 420       # 7 min per scene — generous for complex 4K renders
     enable_critic_loop:  bool  = False
     scenes_per_minute:   float = 2.5       # ~24s avg per scene; tuned for engagement
+    subscene_split_threshold_secs: float = 40.0  # scenes longer than this may be split into subscenes
 
     # ── Output dirs ───────────────────────────
     output_root:    str = "output"

@@ -1,5 +1,6 @@
 domain: NCLEX_NURSING
 display_name: "NCLEX & Nursing Education"
+image_gen_enabled: true   # semantic reasoning gate
 
 default_visual_strategy: MANIM
 

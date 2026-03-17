@@ -339,13 +339,9 @@ class VLMCritic(BaseAgent):
         manim_types = {
             VisualStrategy.MANIM,
             VisualStrategy.TEXT_ANIMATION,
-            VisualStrategy.IMAGE_MANIM_HYBRID,
         }
         if scene.visual_strategy not in manim_types:
             return False
-
-        if scene.visual_strategy == VisualStrategy.IMAGE_MANIM_HYBRID:
-            return True   # HYBRIDs always get inspected
 
         element_count = getattr(scene, "element_count", 0) or 0
         return element_count >= CRITIC_DENSITY_THRESHOLD

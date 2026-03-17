@@ -35,7 +35,7 @@ class ImageGenAgent(BaseAgent):
     def run(self, state: ProcExState) -> ProcExState:
         targets = [
             s for s in state.scenes
-            if s.visual_strategy in (VisualStrategy.IMAGE_GEN, VisualStrategy.IMAGE_MANIM_HYBRID)
+            if s.visual_strategy == VisualStrategy.IMAGE_GEN
         ]
 
         if not targets:
@@ -74,7 +74,7 @@ class ImageGenAgent(BaseAgent):
         self._log(f"Scene {scene.id}: using {'Pro' if use_pro else 'Fast'} model ({model})")
 
         # ── Build enriched prompt ────────────────────────────────────────
-        prompt = self._enrich_prompt(scene, res.nano_res)
+        prompt = self._enrich_prompt(scene, res.nano_res, res.aspect_ratio)
 
         # ── Call NanoBanana ──────────────────────────────────────────────
         from google.genai import types
@@ -132,23 +132,18 @@ class ImageGenAgent(BaseAgent):
 
         scene.image_paths = [final_path]
 
-        # For HYBRID scenes: store background separately for renderer
-        if scene.visual_strategy == VisualStrategy.IMAGE_MANIM_HYBRID:
-            # Mark that there's also Manim code to generate (handled by ManimCoder)
-            scene.image_paths.append(final_path)  # renderer picks [0] as bg
+
 
     @staticmethod
-    def _enrich_prompt(scene: Scene, nano_res: str) -> str:
+    def _enrich_prompt(scene: Scene, nano_res: str, aspect_ratio: str = "16:9") -> str:
         """Enrich the VisualDirector's prompt for NanoBanana."""
         base = scene.visual_prompt.strip()
 
-        # Ensure resolution and style are specified
         additions = []
         if nano_res not in base:
             additions.append(f"{nano_res} resolution")
-        aspect = res.aspect_ratio
-        if aspect not in base:
-            additions.append(f"{aspect} aspect ratio")
+        if aspect_ratio not in base:
+            additions.append(f"{aspect_ratio} aspect ratio")
         if scene.needs_labels and "label" not in base.lower():
             label_str = ", ".join(scene.label_list[:8])
             additions.append(f"clearly labeled callouts for: {label_str}")
@@ -157,4 +152,3 @@ class ImageGenAgent(BaseAgent):
             base += ". " + ". ".join(additions) + "."
 
         return base
-

@@ -5,11 +5,11 @@ THE most important agent in the pipeline.
 
 For each scene, given the narration + word timestamps + domain skill pack,
 the VisualDirector makes THREE decisions:
-  1. visual_strategy: MANIM | IMAGE_GEN | IMAGE_MANIM_HYBRID | TEXT_ANIMATION
+  1. visual_strategy: MANIM | IMAGE_GEN | TEXT_ANIMATION
   2. visual_prompt: detailed, ready-to-execute prompt for ManimCoder or ImageGenAgent
   3. needs_labels / label_list: if IMAGE_GEN, does it need callout labels?
 
-The director is the only agent that reads the skill pack's image_gen_triggers
+The director is the only agent that reads the skill pack's image_gen_enabled flag
 and manim_preferred_topics to make intelligent, context-aware decisions.
 
 Key principle: when in doubt, use MANIM.
@@ -27,120 +27,131 @@ from agents.base_agent import BaseAgent
 
 DIRECTOR_SYSTEM = """You are a master animation director for cinematic educational videos.
 
-For each scene, you decide the OPTIMAL visual strategy and write a precise visual brief.
+For each scene you make two decisions:
+  1. The VISUAL STRATEGY (how to render it)
+  2. Whether to SPLIT it into subscenes (if it is long and covers mixed content)
 
-VISUAL STRATEGIES:
-─────────────────────────────────────────────────────────────────────────────
-MANIM          → Python Manim animations. Use for:
-                 • Mathematical equations, proofs, derivations
-                 • Algorithm step-by-step walkthroughs
-                 • Flowcharts, pathophysiology cascades, mechanism diagrams
-                 • Data flow, architecture diagrams
-                 • Lab value charts, drug comparison tables
-                 • Clinical reasoning frameworks (BowTie, ADPIE, priority lists)
-                 • Pharmacology MOA (receptor diagrams, enzyme cascades)
-                 • ANYTHING conceptual/abstract that does not require a real image
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VISUAL STRATEGY DECISION — SEMANTIC REASONING MODEL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+For every scene, answer this question first:
 
-IMAGE_GEN      → NanoBanana (Gemini image generation). MANDATORY for:
-                 • Scenes where the viewer MUST spatially recognise a real
-                   anatomical or physical structure they would see in a textbook
-                 • Gross anatomy (organ location, cross-sections, body regions)
-                 • Histology (cell/tissue appearance the viewer needs to recognise)
-                 • Physical assessment findings (wound, skin, inspection findings)
-                 • Any scene whose narration says or implies "here you can see
-                   the [structure]" or "notice the appearance of [structure]"
+  "Is what the viewer needs to SEE a SPATIAL/STRUCTURAL REALITY
+   (a physical thing they must recognise — anatomy, clinical finding,
+   real-world object) or a CONCEPTUAL/PROCESS REALITY (something that
+   can be CONSTRUCTED — a mechanism, sequence, comparison, formula)?"
 
-IMAGE_MANIM_HYBRID → NanoBanana background + Manim overlay. MANDATORY for:
-                 • Anatomy scene that also needs annotated arrows OR process overlay
-                 • "This is the kidney [image] — here's how filtration works [overlay]"
+SPATIAL/STRUCTURAL REALITY → IMAGE_GEN
+  • The viewer must recognise a real anatomical structure, tissue, organ
+  • A clinical assessment finding (JVD, wound, skin changes)
+  • A cross-section, histology slide, gross anatomy specimen
+  • Any scene where a medical textbook would show a photograph or atlas image
 
-TEXT_ANIMATION → Manim cinematic text/title cards only. Use for:
-                 • Opening hooks, section transitions, closing synthesis
-                 • Narrative/conceptual scenes with no specific visual anchor
-─────────────────────────────────────────────────────────────────────────────
+CONCEPTUAL/PROCESS REALITY → MANIM
+  • Pathophysiology cascade, mechanism of action, feedback loop
+  • Pharmacology: drug → receptor → clinical effect chains
+  • Clinical reasoning framework (BowTie, ADPIE, priority lists)
+  • Lab value comparisons, drug tables, flowcharts
+  • Any scene where a textbook would show a flowchart, diagram, or equation
 
-══════════════════════════════════════════════════════════════════
-IMAGE_GEN TRIGGER GATE — READ THIS BEFORE DECIDING EVERY SCENE
-══════════════════════════════════════════════════════════════════
-You will be given a list of image_gen_triggers for the active domain.
-These are NOT suggestions. They are MANDATORY conditions:
+TEXT_ANIMATION → opening hooks, section transitions, closing synthesis
+  • No specific visual content — pure narrative or conceptual statement
 
-  IF the scene narration contains or strongly implies any trigger topic
-  THEN visual_strategy MUST be IMAGE_GEN or IMAGE_MANIM_HYBRID.
-  MANIM is NOT a valid choice for these scenes — Manim cannot render
-  spatial anatomy, histology, or physical assessment findings.
+IMPORTANT: If image_gen_enabled is false for this domain, ALWAYS use MANIM
+regardless of content type. ML/Math and CS domains never use IMAGE_GEN.
 
-The triggers define the boundary between "conceptual" (→ MANIM) and
-"spatial/structural" (→ IMAGE_GEN). When in doubt about which side a
-scene falls on, ask: "Would a medical textbook show a photograph or
-diagram here?" If yes → IMAGE_GEN. If it would show a flowchart or
-equation → MANIM.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SUBSCENE SPLITTING — CINEMATIC BEAT SEQUENCING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Long scenes (duration_seconds > split_threshold) that cover MIXED content
+(e.g., "first we see the structure, then we explain the mechanism") should
+be split into SUBSCENES — sequential visual beats, each with their own
+strategy and duration.
 
-Examples of correct decisions:
-  "the glomerulus filters blood through fenestrated capillaries"
-    → IMAGE_GEN  (viewer needs to SEE the glomerular structure)
-  "insulin resistance occurs when receptors fail to respond"
-    → MANIM      (mechanism/cascade — no spatial anatomy needed)
-  "here we see the cross-section of the renal corpuscle"
-    → IMAGE_GEN  (explicit spatial anatomy)
-  "the coagulation cascade activates factor X"
-    → MANIM      (pathway/flowchart — no real image needed)
-  "podocytes form filtration slits along the basement membrane"
-    → IMAGE_MANIM_HYBRID  (needs anatomy image + Manim overlay for slits)
-══════════════════════════════════════════════════════════════════
+This preserves cinematic flow: the video alternates between static imagery
+and animated Manim sequences, creating rhythm rather than one long static shot.
 
+When to split:
+  • Scene duration > split_threshold AND narration covers distinct visual phases
+  • Example: 50s scene — "The glomerulus [IMAGE, 15s] filters blood through
+    the basement membrane [MANIM, 20s] under Starling forces [MANIM, 15s]"
+
+When NOT to split:
+  • Scene is pure MANIM from start to finish
+  • Scene is short (under split_threshold)
+  • Content flows as one continuous thought
+
+Subscene duration_fraction must sum to 1.0 across all subscenes.
+Minimum subscene duration: 10 seconds.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 OUTPUT FORMAT: Return ONLY valid JSON array — no fences, no prose.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [
   {
     "scene_id": 1,
     "visual_strategy": "MANIM",
-    "visual_reasoning": "This scene explains insulin resistance as a mechanism — Manim flowchart is ideal",
-    "visual_prompt": "Detailed, precise prompt for the ManimCoder or ImageGenAgent...",
+    "visual_reasoning": "Insulin resistance is a conceptual mechanism — Manim flowchart ideal",
+    "visual_prompt": "Detailed prompt...",
     "needs_labels": false,
     "label_list": [],
     "element_count": 4,
-    "zone_allocation": {
-      "scene_title":   "TITLE",
-      "main_content":  "MAIN",
-      "sidebar_note":  "UPPER_SIDEBAR",
-      "footer_tip":    "FOOTER"
-    }
+    "zone_allocation": {"scene_title": "TITLE", "main_diagram": "MAIN"},
+    "subscenes": []
   },
-  ...
+  {
+    "scene_id": 3,
+    "visual_strategy": "MANIM",
+    "visual_reasoning": "Long scene with mixed structural and process content — splitting into beats",
+    "visual_prompt": "",
+    "needs_labels": false,
+    "label_list": [],
+    "element_count": 0,
+    "zone_allocation": {},
+    "subscenes": [
+      {
+        "beat": 1,
+        "visual_strategy": "IMAGE_GEN",
+        "duration_fraction": 0.30,
+        "visual_prompt": "Medical illustration of the renal corpuscle showing glomerulus, Bowman capsule, podocytes. Clean textbook style. 16:9. 2K.",
+        "needs_labels": true,
+        "label_list": ["Glomerulus", "Bowman capsule", "Podocytes"],
+        "element_count": 1,
+        "zone_allocation": {}
+      },
+      {
+        "beat": 2,
+        "visual_strategy": "MANIM",
+        "duration_fraction": 0.40,
+        "visual_prompt": "Animated flowchart showing filtration forces: hydrostatic vs oncotic pressure arrows building up in sequence",
+        "needs_labels": false,
+        "label_list": [],
+        "element_count": 5,
+        "zone_allocation": {"scene_title": "TITLE", "force_diagram": "MAIN", "label": "FOOTER"}
+      },
+      {
+        "beat": 3,
+        "visual_strategy": "MANIM",
+        "duration_fraction": 0.30,
+        "visual_prompt": "Net filtration pressure equation with animated MathTex build-up showing NFP = HP - OP",
+        "needs_labels": false,
+        "label_list": [],
+        "element_count": 3,
+        "zone_allocation": {"scene_title": "TITLE", "equation": "MAIN", "result": "FOOTER"}
+      }
+    ]
+  }
 ]
 
-element_count: estimate the number of distinct visual elements (boxes, labels, icons,
-arrows, text blocks) that will appear on screen simultaneously at peak density.
-Be realistic — a simple title card is 1, a BowTie diagram with 5 arms is 7, a
-medication table with 4 columns is 6.
-
-zone_allocation: assign EVERY distinct on-screen element to a named zone from this list:
-  TITLE        — top banner: scene title, chapter heading
-  SUBTITLE     — second row: equation header, subtitle
-  MAIN         — primary content: central diagram, proof, animation (rows 1–4, left 4 cols)
-  UPPER_MAIN   — upper half of main: first half of a two-part layout
-  LOWER_MAIN   — lower half of main: second half, answer reveal, detail
-  SIDEBAR      — right sidebar: callout, legend, annotation (rows 1–4, right 2 cols)
-  UPPER_SIDEBAR— upper sidebar: primary callout or highlighted fact
-  LOWER_SIDEBAR— lower sidebar: secondary callout or follow-up note
-  UPPER_LEFT   — upper-left quadrant: first panel in a 2×2 layout
-  UPPER_RIGHT  — upper-right quadrant: second panel in a 2×2 layout
-  LOWER_LEFT   — lower-left quadrant: third panel in 2×2
-  LOWER_RIGHT  — lower-right quadrant: fourth panel in 2×2
-  CENTER       — absolute canvas centre: isolated focus element
-  FOOTER       — bottom banner: exam tip, recap line, citation
-
-ZONE ALLOCATION RULES:
-- Every key in zone_allocation must be a short snake_case label describing what the element IS
-- No two elements may share the same zone
-- TEXT_ANIMATION scenes: use only TITLE + optional SUBTITLE + optional FOOTER
-- A scene_title element MUST always occupy TITLE zone — every scene
-
-For visual_prompt:
-- MANIM: Describe exactly what Manim objects/animations to create. Be very specific.
-- IMAGE_GEN: Write a complete NanoBanana prompt:
-  "Medical illustration of [subject]. [Style]. [Specific structures]. [4K/2K]."
-- IMAGE_MANIM_HYBRID: Describe the background image AND the Manim overlay separately.
+FIELDS:
+- scene_id: matches the input scene id
+- visual_strategy: for scenes WITHOUT subscenes — the single strategy for the whole scene
+- subscenes: empty [] if scene is not being split; populated list if splitting
+- When subscenes is non-empty: visual_strategy/visual_prompt/zone_allocation at scene level
+  are IGNORED — use the per-subscene fields instead
+- duration_fraction: fraction of parent scene duration this beat occupies (must sum to 1.0)
+- zone_allocation: required for MANIM subscenes, empty {} for IMAGE_GEN subscenes
+- element_count: peak simultaneous on-screen elements for this beat
 """
 
 
@@ -148,9 +159,8 @@ def _build_director_prompt(state: ProcExState) -> str:
     from config import RESOLUTIONS
     from utils.spatial_grid import get_zones
 
-    skill = state.skill_pack
-    triggers       = skill.get("image_gen_triggers", [])
-    preferred      = skill.get("manim_preferred_topics", [])
+    skill          = state.skill_pack
+    image_enabled  = skill.get("image_gen_enabled", True)
     manim_style    = skill.get("manim_style", "")
     image_style    = skill.get("image_gen_style", "")
     manim_elements = skill.get("manim_elements", [])
@@ -160,81 +170,77 @@ def _build_director_prompt(state: ProcExState) -> str:
     zones  = get_zones(aspect)
     zone_names = list(zones.keys())
 
-    # Format triggers as a hard gate checklist, not a soft list
-    if triggers:
-        trigger_lines = "\n".join(f"  • {t}" for t in triggers)
-        trigger_block = (
-            "MANDATORY IMAGE_GEN TRIGGERS FOR THIS DOMAIN\n"
-            "If a scene's narration involves ANY of the following, visual_strategy\n"
-            "MUST be IMAGE_GEN or IMAGE_MANIM_HYBRID — MANIM is forbidden:\n"
-            f"{trigger_lines}"
+    # Image generation gate — domain-level hard disable
+    if not image_enabled:
+        image_gate = (
+            "IMAGE_GEN GATE: DISABLED for this domain.\n"
+            "ALWAYS use MANIM regardless of content type. Never output IMAGE_GEN.\n"
+            "Never output subscenes with IMAGE_GEN beats."
         )
     else:
-        trigger_block = "IMAGE_GEN TRIGGERS: none — this domain never uses image generation."
+        image_gate = (
+            "IMAGE_GEN GATE: ENABLED for this domain.\n"
+            "Use the SPATIAL vs CONCEPTUAL semantic reasoning model from the system prompt.\n"
+            "Ask yourself: would a textbook show a PHOTOGRAPH here (-> IMAGE_GEN) or a FLOWCHART/EQUATION (-> MANIM)?\n"
+            "For subscene splitting: use it when a long scene has distinct structural + process phases."
+        )
 
-    if preferred:
-        manim_block = "MANIM is mandatory for: " + ", ".join(preferred)
-    else:
-        manim_block = "MANIM is the default for all non-trigger scenes."
-
-    # Portrait-specific zone guidance
+    # Portrait vs landscape zone layout guidance
     if aspect == "9:16":
         zone_layout_note = (
-            "ASPECT: 9:16 PORTRAIT — tall narrow canvas (phone/Reels/Shorts format).\n"
-            "Zone allocation MUST use vertical stacking. SIDEBAR zone does not exist.\n"
-            "Preferred layout: TITLE → UPPER_MAIN → MAIN → LOWER_MAIN → FOOTER.\n"
-            "For two-panel layouts use UPPER_HALF / LOWER_HALF, not LEFT/RIGHT."
+            "ASPECT: 9:16 PORTRAIT -- tall narrow canvas.\n"
+            "Stack content VERTICALLY. SIDEBAR does not exist. Use UPPER_MAIN/LOWER_MAIN/UPPER_HALF/LOWER_HALF."
         )
     else:
         zone_layout_note = (
-            "ASPECT: 16:9 LANDSCAPE — wide canvas (standard video format).\n"
-            "Zone allocation can use horizontal layouts: MAIN + SIDEBAR is the baseline.\n"
-            "Preferred layout: TITLE + MAIN, with SIDEBAR for secondary info."
+            "ASPECT: 16:9 LANDSCAPE -- wide canvas.\n"
+            "Use MAIN + SIDEBAR as baseline. Quadrant layouts available."
         )
+
+    split_threshold = state.skill_pack.get("_cfg_split_threshold", 40.0)
 
     scenes_json = []
     for scene in state.scenes:
         ts_sample = timestamps_to_dict_list(scene.timestamps[:20])
         scenes_json.append({
-            "id":                    scene.id,
-            "narration_text":        scene.narration_text,
-            "duration_seconds":      round(scene.duration_seconds, 1),
-            "initial_visual_hint":   scene.visual_prompt,
+            "id":                     scene.id,
+            "narration_text":         scene.narration_text,
+            "duration_seconds":       round(scene.duration_seconds, 1),
+            "splittable":             scene.duration_seconds > split_threshold,
+            "initial_visual_hint":    scene.visual_prompt,
             "word_timestamps_sample": ts_sample,
         })
 
     return f"""Domain: {state.domain.value}
 Resolution: {state.resolution} ({aspect})
+Subscene split threshold: {split_threshold}s (scenes marked splittable=true may use subscenes)
 
-{trigger_block}
-
-{manim_block}
+{image_gate}
 
 {zone_layout_note}
 
 MANIM STYLE GUIDE FOR THIS DOMAIN:
 {manim_style}
 
-IMAGE GEN STYLE GUIDE (only if using IMAGE_GEN or HYBRID):
+IMAGE GEN STYLE GUIDE (only if image_gen_enabled):
 {image_style}
 
 AVAILABLE MANIM ELEMENTS FOR THIS DOMAIN:
-{chr(10).join(f'  • {e}' for e in manim_elements)}
+{chr(10).join(f"  - {e}" for e in manim_elements)}
 
 CINEMATIC PALETTE:
 {json.dumps(CINEMATIC_PALETTE, indent=2)}
 
 AVAILABLE ZONES FOR zone_allocation ({aspect}):
-{chr(10).join(f'  {n}: {zones[n].description}' for n in zone_names)}
+{chr(10).join(f"  {n}: {zones[n].description}" for n in zone_names)}
 
 ---
 SCENES TO DIRECT:
 {json.dumps(scenes_json, indent=2)}
 
 ---
-Direct all {len(state.scenes)} scenes. Return the JSON array.
-Apply the IMAGE_GEN trigger gate rigorously — check each scene's narration_text
-against the trigger list before assigning MANIM.
+Direct ALL {len(state.scenes)} scenes. Return the complete JSON array.
+For each scene: apply semantic reasoning, use subscenes where splittable=true and content is mixed.
 """
 
 
@@ -258,16 +264,27 @@ class VisualDirector(BaseAgent):
 
                 # Unwrap response
                 raw_type = type(raw).__name__
+
+                # ── DIAGNOSTIC: log raw response so we can see what model actually returned ──
+                raw_str = str(raw)
+                self._log(f"Attempt {attempt+1}: raw_type={raw_type}, raw_length={len(raw_str)} chars")
+                self._log(f"Attempt {attempt+1}: raw_keys={list(raw.keys()) if isinstance(raw, dict) else 'N/A (list)'}")
+                self._log(f"Attempt {attempt+1}: raw_preview={raw_str[:500]}")
+
                 if isinstance(raw, list):
                     results = raw
                 elif isinstance(raw, dict):
                     for key in ("scenes", "scene_directions", "data", "results"):
                         if key in raw and isinstance(raw[key], list):
                             results = raw[key]
+                            self._log(f"Attempt {attempt+1}: unwrapped via key='{key}', got {len(results)} items")
                             break
                     else:
                         if "visual_strategy" in raw:
                             results = [raw]
+                            self._log(f"Attempt {attempt+1}: single scene dict wrapped as list")
+                        else:
+                            self._log(f"Attempt {attempt+1}: UNRECOGNISED dict structure — full keys: {list(raw.keys())}")
 
                 self._log(
                     f"Attempt {attempt+1}: raw_type={raw_type}, "
@@ -307,6 +324,9 @@ class VisualDirector(BaseAgent):
             if sid is not None:
                 by_id[int(sid)] = r
 
+        # Track which scenes have subscene splits (expanded after loop)
+        scenes_with_subscenes: list[tuple] = []   # (scene, subscene_dicts)
+
         for scene in state.scenes:
             d = by_id.get(int(scene.id))
             if not d:
@@ -314,7 +334,20 @@ class VisualDirector(BaseAgent):
                 scene.visual_strategy = VisualStrategy.MANIM
                 continue
 
-            # Map string → enum
+            # Check for subscene split first
+            subscene_list = d.get("subscenes", [])
+            if subscene_list and isinstance(subscene_list, list) and len(subscene_list) > 1:
+                # Validate fractions sum to ~1.0
+                total_frac = sum(float(b.get("duration_fraction", 0)) for b in subscene_list)
+                if 0.85 <= total_frac <= 1.15:
+                    self._log(
+                        f"Scene {scene.id}: SUBSCENE SPLIT into {len(subscene_list)} beats "
+                        f"({scene.duration_seconds:.0f}s total)"
+                    )
+                    scenes_with_subscenes.append((scene, subscene_list))
+                    continue   # will be expanded below; skip single-scene assignment
+
+            # Single strategy assignment
             strat_str = d.get("visual_strategy", "MANIM").upper()
             try:
                 scene.visual_strategy = VisualStrategy(strat_str)
@@ -336,10 +369,92 @@ class VisualDirector(BaseAgent):
                 f"{scene.visual_reasoning[:60]}"
             )
 
+        # ── Expand subscene splits ─────────────────────────────────────────────
+        if scenes_with_subscenes:
+            state.scenes = self._expand_subscenes(state.scenes, scenes_with_subscenes)
+
         # Strategy summary
         from collections import Counter
         counts = Counter(s.visual_strategy.value for s in state.scenes)
-        self._log(f"Strategy distribution: {dict(counts)}")
+        n_subscenes = sum(1 for s in state.scenes if s.subscene_index > 0)
+        self._log(
+            f"Strategy distribution: {dict(counts)}"
+            + (f" ({n_subscenes} subscene beats)" if n_subscenes else "")
+        )
 
         return state
 
+    # ── Subscene expansion ────────────────────────────────────────────────────
+
+    def _expand_subscenes(
+        self,
+        scenes: list,
+        splits: list[tuple],
+    ) -> list:
+        """
+        Replace parent scenes with their subscene beats.
+        Each beat becomes a full Scene with proportional duration and own strategy.
+        Timestamps are sliced proportionally across beats.
+        """
+        from state import Scene as SceneClass
+
+        # Build a map of parent id -> (parent_scene, [beat_dicts])
+        split_map = {parent.id: (parent, beats) for parent, beats in splits}
+
+        new_scenes = []
+        # Use a global sub-id counter to keep ids unique
+        # Subscene ids: parent_id * 100 + beat_index (e.g. scene 3 beat 2 → id 302)
+        for scene in scenes:
+            if scene.id not in split_map:
+                new_scenes.append(scene)
+                continue
+
+            parent, beat_dicts = split_map[scene.id]
+            total_dur     = parent.duration_seconds
+            all_timestamps = list(parent.timestamps)
+            ts_count      = len(all_timestamps)
+
+            cursor = 0.0
+            for i, beat in enumerate(beat_dicts):
+                frac     = float(beat.get("duration_fraction", 1.0 / len(beat_dicts)))
+                beat_dur = round(total_dur * frac, 2)
+                beat_dur = max(beat_dur, 10.0)   # minimum 10s per beat
+
+                # Slice timestamps proportionally
+                ts_start = int(cursor / total_dur * ts_count)
+                ts_end   = int((cursor + beat_dur) / total_dur * ts_count)
+                beat_ts  = all_timestamps[ts_start:ts_end]
+
+                # Parse strategy
+                strat_str = beat.get("visual_strategy", "MANIM").upper()
+                try:
+                    strategy = VisualStrategy(strat_str)
+                except ValueError:
+                    strategy = VisualStrategy.MANIM
+
+                sub_id = parent.id * 100 + (i + 1)
+                sub = SceneClass(
+                    id               = sub_id,
+                    narration_text   = parent.narration_text,   # full narration; assembler handles sync
+                    duration_seconds = beat_dur,
+                    visual_strategy  = strategy,
+                    visual_prompt    = beat.get("visual_prompt", ""),
+                    visual_reasoning = f"Subscene {i+1}/{len(beat_dicts)} of scene {parent.id}",
+                    needs_labels     = beat.get("needs_labels", False),
+                    label_list       = beat.get("label_list", []),
+                    element_count    = int(beat.get("element_count", 0)),
+                    zone_allocation  = beat.get("zone_allocation", {}),
+                    timestamps       = beat_ts,
+                    tts_audio_path   = parent.tts_audio_path,
+                    tts_duration     = beat_dur,
+                    parent_scene_id  = parent.id,
+                    subscene_index   = i + 1,
+                )
+                new_scenes.append(sub)
+                self._log(
+                    f"  Beat {i+1}/{len(beat_dicts)}: id={sub_id} "
+                    f"{strategy.value} {beat_dur:.1f}s"
+                )
+                cursor += beat_dur
+
+        return new_scenes

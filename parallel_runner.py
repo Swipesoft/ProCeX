@@ -103,7 +103,12 @@ def run_tts_and_director_parallel(
     t1 = threading.Thread(target=run_tts, name="TTSAgent")
     t2 = threading.Thread(target=run_dir, name="VisualDirector")
     t1.start(); t2.start()
-    t1.join();  t2.join()
+    try:
+        t1.join(); t2.join()
+    except KeyboardInterrupt:
+        print("[Parallel] ⚠ Stage A interrupted — waiting for threads...")
+        t1.join(timeout=5); t2.join(timeout=5)
+        raise
 
     # Report any errors — TTS failure is fatal (no timestamps = no anchors)
     for agent_name, exc in errors:
@@ -177,7 +182,7 @@ def run_generation_render_pipeline(
     manim_scenes  = [s for s in state.scenes if s.visual_strategy in
                      (VisualStrategy.MANIM, VisualStrategy.TEXT_ANIMATION)]
     image_scenes  = [s for s in state.scenes if s.visual_strategy in
-                     (VisualStrategy.IMAGE_GEN, VisualStrategy.IMAGE_MANIM_HYBRID)]
+                     (VisualStrategy.IMAGE_GEN,)]
 
     total_scenes  = len(state.scenes)
     print(f"[Parallel] Stage B: {len(manim_scenes)} Manim, {len(image_scenes)} image scenes")
@@ -202,10 +207,17 @@ def run_generation_render_pipeline(
         with done_lock:
             done_count[0] += 1
 
+    from config import RESOLUTIONS
+    res    = RESOLUTIONS.get(state.resolution, RESOLUTIONS["1080p"])
+    aspect = res.aspect_ratio
+
+    # ── Shutdown event — must be created BEFORE workers are defined ───────
+    _shutdown = threading.Event()
+
     # ── Coder worker ──────────────────────────────────────────────────────
 
     def coder_worker(wid: int):
-        while True:
+        while not _shutdown.is_set():
             try:
                 task = code_queue.get(timeout=_QUEUE_TIMEOUT)
             except Empty:
@@ -214,9 +226,10 @@ def run_generation_render_pipeline(
                 code_queue.put(_DONE)   # fan-out to sibling workers
                 break
 
-            scene = task.scene
+            scene     = task.scene
             log(f"Coder-{wid}: Scene {scene.id} "
-                f"(render_attempt={task.attempt} regen={bool(task.render_error)})")
+                f"(render_attempt={task.attempt} regen={bool(task.render_error)}"
+                f")")
 
             # Set file paths if not yet assigned
             if not scene.manim_class_name:
@@ -226,14 +239,18 @@ def run_generation_render_pipeline(
 
             try:
                 code = coder._generate_scene_code(
-                    scene, state.skill_pack, initial_error=task.render_error
+                    scene, state.skill_pack,
+                    initial_error = task.render_error,
+                    res           = res,
+                    aspect        = aspect,
                 )
-                coder._write_scene_file(scene.manim_file_path, code)
+                coder._write_scene_file(scene.manim_file_path, code, res=res)
             except Exception as e:
                 log(f"Coder-{wid}: Scene {scene.id} generation exception: {e} — using fallback")
                 coder._write_scene_file(
                     scene.manim_file_path,
-                    _fallback_scene(scene.manim_class_name, scene)
+                    _fallback_scene(scene.manim_class_name, scene),
+                    res=res,
                 )
 
             log(f"Coder-{wid}: Scene {scene.id} code ready → render queue")
@@ -291,11 +308,7 @@ def run_generation_render_pipeline(
             log(f"Image-{wid}: Scene {scene.id} IMAGE_GEN → render queue")
             render_queue.put(SceneTask(scene=scene))
 
-        # HYBRID success → needs Manim code too (Problem 4 fix)
-        # Route through code_queue so coder generates the overlay .py
-        elif scene.visual_strategy == VisualStrategy.IMAGE_MANIM_HYBRID:
-            log(f"Image-{wid}: Scene {scene.id} HYBRID image done → code queue for overlay")
-            code_queue.put(SceneTask(scene=scene))
+        # IMAGE_MANIM_HYBRID retired — IMAGE_GEN handles all annotations
 
     # ── Renderer worker ───────────────────────────────────────────────────
 
@@ -334,7 +347,7 @@ def run_generation_render_pipeline(
 
                 if scene.visual_strategy in (VisualStrategy.MANIM,
                                              VisualStrategy.TEXT_ANIMATION,
-                                             VisualStrategy.IMAGE_MANIM_HYBRID):
+                                             ):
                     # Re-generate Manim code with the error traceback
                     code_queue.put(SceneTask(
                         scene        = scene,
@@ -405,16 +418,25 @@ def run_generation_render_pipeline(
     start    = time.time()
     last_log = 0
 
-    while True:
-        with done_lock:
-            n_done = done_count[0]
-        if n_done >= total_scenes:
-            break
-        now = time.time()
-        if now - last_log >= 30:
-            log(f"Progress: {n_done}/{total_scenes} done ({(now-start)/60:.1f} min elapsed)")
-            last_log = now
-        time.sleep(0.5)
+    try:
+        while True:
+            with done_lock:
+                n_done = done_count[0]
+            if n_done >= total_scenes:
+                break
+            now = time.time()
+            if now - last_log >= 30:
+                log(f"Progress: {n_done}/{total_scenes} done ({(now-start)/60:.1f} min elapsed)")
+                last_log = now
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        log("⚠ Interrupted — signalling workers to stop...")
+        _shutdown.set()
+        code_queue.put(_DONE)
+        render_queue.put(_DONE)
+        for t in threads:
+            t.join(timeout=5)
+        raise   # propagate up to main.py handler which saves checkpoint
 
     # ── Shut down workers ─────────────────────────────────────────────────
     # Send sentinels AFTER all work is confirmed done — fixes Problem 5

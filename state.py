@@ -17,7 +17,7 @@ import json
 class VisualStrategy(str, Enum):
     MANIM            = "MANIM"             # Pure Manim: equations, graphs, ML diagrams, flowcharts
     IMAGE_GEN        = "IMAGE_GEN"         # NanoBanana: anatomical structures, real-world medical imagery
-    IMAGE_MANIM_HYBRID = "IMAGE_MANIM_HYBRID"  # NanoBanana bg + Manim overlay (e.g., anatomy + mechanism)
+    IMAGE_MANIM_HYBRID = "IMAGE_GEN"  # Retired — maps to IMAGE_GEN; NanoBanana handles labels natively
     TEXT_ANIMATION   = "TEXT_ANIMATION"    # Manim but just cinematic title/quote cards
 
 
@@ -87,6 +87,10 @@ class Scene:
     # Maps element label → zone name, e.g. {"scene_title": "TITLE", "formula": "MAIN"}
     # ManimCoder treats this as a hard positional contract, not a suggestion.
     zone_allocation:     dict = field(default_factory=dict)
+
+    # Subscene fields — set when VisualDirector splits a long scene into beats
+    parent_scene_id:     Optional[int] = None   # original scene id this was split from
+    subscene_index:      int = 0                 # position within parent (0 = not a subscene)
 
 
 # ─────────────────────────────────────────────

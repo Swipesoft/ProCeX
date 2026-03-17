@@ -26,7 +26,7 @@ from agents.vlm_critic import VLMCritic, CriticResult
 
 
 # Maximum number of regenerate-and-retry cycles per scene before black fallback
-REGEN_RETRIES = 5
+REGEN_RETRIES = 2
 
 
 class RendererAgent(BaseAgent):
@@ -236,7 +236,7 @@ class RendererAgent(BaseAgent):
         elif strategy == VisualStrategy.IMAGE_GEN:
             return self._render_ken_burns(scene, resolution, out_dir)
         elif strategy == VisualStrategy.IMAGE_MANIM_HYBRID:
-            return self._render_hybrid(scene, resolution, out_dir)
+            return self._render_ken_burns(scene, resolution, out_dir)  # retired — use ken burns
         else:
             raise ValueError(f"Unknown visual strategy: {strategy}")
 
