@@ -140,11 +140,19 @@ class AssemblerAgent(BaseAgent):
         clip_path  = scene.clip_path
         audio_path = scene.tts_audio_path
         audio_dur  = scene.tts_duration
+        audio_start = getattr(scene, "tts_audio_start", 0.0) or 0.0
         clip_dur   = self._probe_duration(clip_path)
         seg_path   = os.path.join(out_dir, f"seg_{scene.id:02d}.mp4")
 
         if clip_dur  <= 0: raise ValueError(f"Cannot probe clip duration: {clip_path}")
         if audio_dur <= 0: raise ValueError(f"Audio duration is zero: {audio_path}")
+
+        # Build audio input flags — seek into parent audio for subscene beats
+        audio_input = ["-i", audio_path]
+        audio_map_flags = ["-map", "1:a:0"]
+        if audio_start > 0.01:
+            # Subscene beat: slice the correct portion of the parent audio
+            audio_input = ["-ss", f"{audio_start:.4f}", "-i", audio_path]
 
         target_w, target_h = res.width, res.height
         clip_info   = self._probe_clip(clip_path)
@@ -166,7 +174,7 @@ class AssemblerAgent(BaseAgent):
             vf = f"{scale_filter}fps=25,format=yuv420p" if scale_filter else "fps=25,format=yuv420p"
             cmd = [
                 "ffmpeg", "-y",
-                "-i", clip_path, "-i", audio_path,
+                "-i", clip_path, *audio_input,
                 "-vf", vf,
                 "-c:v", "libx264", "-preset", "fast", "-crf", "18",
                 "-pix_fmt", "yuv420p",
@@ -189,7 +197,7 @@ class AssemblerAgent(BaseAgent):
             )
             cmd = [
                 "ffmpeg", "-y",
-                "-i", clip_path, "-i", audio_path,
+                "-i", clip_path, *audio_input,
                 "-vf", vf,
                 "-c:v", "libx264", "-preset", "fast", "-crf", "18",
                 "-pix_fmt", "yuv420p",
@@ -208,7 +216,7 @@ class AssemblerAgent(BaseAgent):
             vf = f"{scale_filter}fps=25,format=yuv420p" if scale_filter else "fps=25,format=yuv420p"
             cmd = [
                 "ffmpeg", "-y",
-                "-i", clip_path, "-i", audio_path,
+                "-i", clip_path, *audio_input,
                 "-vf", vf,
                 "-c:v", "libx264", "-preset", "fast", "-crf", "18",
                 "-pix_fmt", "yuv420p",

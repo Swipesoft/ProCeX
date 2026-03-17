@@ -435,7 +435,7 @@ class VisualDirector(BaseAgent):
                 sub_id = parent.id * 100 + (i + 1)
                 sub = SceneClass(
                     id               = sub_id,
-                    narration_text   = parent.narration_text,   # full narration; assembler handles sync
+                    narration_text   = parent.narration_text,
                     duration_seconds = beat_dur,
                     visual_strategy  = strategy,
                     visual_prompt    = beat.get("visual_prompt", ""),
@@ -447,6 +447,7 @@ class VisualDirector(BaseAgent):
                     timestamps       = beat_ts,
                     tts_audio_path   = parent.tts_audio_path,
                     tts_duration     = beat_dur,
+                    tts_audio_start  = round(cursor, 3),   # offset into parent audio for this beat
                     parent_scene_id  = parent.id,
                     subscene_index   = i + 1,
                 )

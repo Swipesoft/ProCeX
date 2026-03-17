@@ -73,6 +73,7 @@ class Scene:
     # TTS audio for this scene (set by TTSAgent)
     tts_audio_path:     str   = ""
     tts_duration:       float = 0.0
+    tts_audio_start:    float = 0.0   # start offset within tts_audio_path (for subscene beats)
 
     # Render output
     clip_path:          Optional[str] = None
