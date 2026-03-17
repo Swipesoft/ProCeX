@@ -227,10 +227,17 @@ class ProcExOrchestrator:
         if agent_name == "DomainRouter"   and state.skill_pack:              return True
         if agent_name == "ScriptWriter"   and state.scenes:                  return True
         if agent_name == "TTSAgent"       and state.audio_path:              return True
-        if agent_name == "VisualDirector" and all(
-            s.visual_prompt and s.zone_allocation               # zone_allocation required —
-            for s in state.scenes):                             # old checkpoints without it
-            return True                                         # will always re-run director
+        if agent_name == "VisualDirector":
+            # Done only when every scene has a visual_prompt AND either:
+            #   - MANIM/TEXT_ANIMATION scene with zone_allocation populated (dict not empty)
+            #   - IMAGE_GEN/HYBRID scene (zone_allocation not applicable)
+            manim_types = {VisualStrategy.MANIM, VisualStrategy.TEXT_ANIMATION}
+            if state.scenes and all(s.visual_prompt for s in state.scenes):
+                if all(
+                    bool(s.zone_allocation) if s.visual_strategy in manim_types else True
+                    for s in state.scenes
+                ):
+                    return True
         if agent_name == "ManimCoder"     and all(
             s.manim_file_path or s.visual_strategy not in (
                 VisualStrategy.MANIM, VisualStrategy.TEXT_ANIMATION)

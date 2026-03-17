@@ -242,31 +242,61 @@ class VisualDirector(BaseAgent):
     name = "VisualDirector"
 
     def run(self, state: ProcExState) -> ProcExState:
-        self._log(f"Directing visuals for {len(state.scenes)} scenes...")
+        n_scenes = len(state.scenes)
+        self._log(f"Directing visuals for {n_scenes} scenes...")
 
+        results = []
         for attempt in range(self.cfg.max_llm_retries):
             try:
-                results = self.llm.complete_json(
+                raw = self.llm.complete_json(
                     DIRECTOR_SYSTEM,
                     _build_director_prompt(state),
-                    max_tokens=16384,
+                    max_tokens=32768,   # raised — large scene counts need room
                     temperature=0.4,
                     primary_provider="gemini",
                 )
+
+                # Unwrap response
+                raw_type = type(raw).__name__
+                if isinstance(raw, list):
+                    results = raw
+                elif isinstance(raw, dict):
+                    for key in ("scenes", "scene_directions", "data", "results"):
+                        if key in raw and isinstance(raw[key], list):
+                            results = raw[key]
+                            break
+                    else:
+                        if "visual_strategy" in raw:
+                            results = [raw]
+
+                self._log(
+                    f"Attempt {attempt+1}: raw_type={raw_type}, "
+                    f"parsed {len(results)}/{n_scenes} scene direction(s)"
+                )
+
+                # Partial response detection — retry if model cut off early
+                if len(results) < n_scenes:
+                    self._log(
+                        f"Attempt {attempt+1}: PARTIAL — only {len(results)} of "
+                        f"{n_scenes} scenes returned. Retrying..."
+                    )
+                    results = []
+                    if attempt < self.cfg.max_llm_retries - 1:
+                        continue
+
                 break
+
             except Exception as e:
                 self._log(f"Attempt {attempt+1} failed: {e}")
                 if attempt == self.cfg.max_llm_retries - 1:
                     raise
 
-        if not isinstance(results, list):
-            results = results.get("scenes", []) if isinstance(results, dict) else []
-
-        # Log what came back for diagnostics
-        self._log(f"LLM returned {len(results)} scene direction(s)")
+        # Diagnostics
         if results:
-            # Show keys present in first item so mismatches are immediately visible
-            self._log(f"Response item keys: {list(results[0].keys()) if results else '[]'}")
+            self._log(f"Response item keys: {list(results[0].keys())}")
+            from collections import Counter
+            raw_strategies = [r.get("visual_strategy","?") for r in results if isinstance(r,dict)]
+            self._log(f"Raw LLM strategies: {dict(Counter(raw_strategies))}")
 
         # Build lookup — handle both "scene_id" (schema) and "id" (model sometimes echoes input key)
         by_id = {}
@@ -312,3 +342,4 @@ class VisualDirector(BaseAgent):
         self._log(f"Strategy distribution: {dict(counts)}")
 
         return state
+
