@@ -384,6 +384,157 @@ class VisualDirector(BaseAgent):
 
         return state
 
+    # ── Critic reroute ────────────────────────────────────────────────────────
+
+    def reroute_scene(
+        self,
+        scene,
+        frame_bytes: bytes,
+        aspect: str = "16:9",
+    ):
+        """
+        Called by parallel_runner when VLMCritic returns status="reroute".
+
+        Receives the peak-density frame (75-100% into the clip) and the
+        original scene object. Returns a replacement Scene with updated
+        visual_prompt, zone_allocation, element_count, and subscenes.
+
+        Separation of concern: this method receives NO issue list from the
+        Critic. It sees only the frame and the original scene intent. This
+        means all reroute policy lives in the Critic; VisualDirector focuses
+        purely on re-planning from what it sees.
+        """
+        import base64
+        from utils.spatial_grid import get_zones
+
+        zones     = get_zones(aspect)
+        zone_list = ", ".join(zones.keys())
+        b64_frame = base64.b64encode(frame_bytes).decode("utf-8")
+
+        system_prompt = """\
+You are an expert visual layout designer for educational animation videos.
+You will receive a frame from a Manim animation and its original visual intent.
+Your job is to decide ONE of two remediation paths:
+
+PATH A — REVISE LAYOUT:
+  The scene has a good amount of content but elements are badly positioned.
+  Produce a new visual_prompt with explicit zone placements that eliminate
+  the overlap. Keep it as one scene.
+
+PATH B — SPLIT INTO SUBSCENES:
+  The scene has too many teaching points to fit cleanly in one frame even
+  with perfect positioning. Split the content into 2-3 sequential beats,
+  each covering a distinct teaching point with its own clean layout.
+
+Respond ONLY with valid JSON — no preamble, no markdown fences."""
+
+        user_prompt = f"""ORIGINAL SCENE INTENT
+=====================
+Scene ID:        {scene.id}
+Visual strategy: {scene.visual_strategy.value}
+Visual prompt:   {scene.visual_prompt}
+Visual reasoning:{scene.visual_reasoning}
+Element count:   {getattr(scene, 'element_count', '?')}
+Zone allocation: {getattr(scene, 'zone_allocation', {})}
+
+AVAILABLE ZONES: {zone_list}
+
+RENDERED FRAME (peak density at ~90% of clip duration)
+=======================================================
+[Image attached — this is what actually rendered]
+
+TASK
+====
+Look at the rendered frame carefully.
+Decide: PATH A (revise layout) or PATH B (split into subscenes)?
+
+Respond with this JSON schema:
+
+For PATH A:
+{{
+  "path": "A",
+  "visual_prompt": "<new detailed visual_prompt with explicit zone names>",
+  "zone_allocation": {{"element_name": "ZONE_NAME", ...}},
+  "element_count": <int>,
+  "reasoning": "<one sentence>"
+}}
+
+For PATH B:
+{{
+  "path": "B",
+  "reasoning": "<one sentence why split is necessary>",
+  "subscenes": [
+    {{
+      "beat": 1,
+      "visual_prompt": "<what this beat shows>",
+      "zone_allocation": {{"element_name": "ZONE_NAME"}},
+      "element_count": <int>,
+      "duration_weight": <0.0-1.0, must sum to 1.0>
+    }}
+  ]
+}}"""
+
+        try:
+            raw = self.llm.complete_vision(
+                system_prompt    = system_prompt,
+                user_prompt      = user_prompt,
+                image_bytes      = frame_bytes,
+                image_mime       = "image/jpeg",
+                max_tokens       = 16384,
+                temperature      = 0.3,
+                primary_provider = "gemini",
+            )
+            import re, json
+            raw = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
+            raw = re.sub(r"```\s*$",          "", raw.strip(), flags=re.MULTILINE)
+            raw = raw.strip()
+
+            # Use json-repair to handle all malformed JSON cases
+            from json_repair import repair_json
+            try:
+                result = json.loads(repair_json(raw, ensure_ascii=False))
+                if not isinstance(result, dict):
+                    raise ValueError(f"Expected dict, got {type(result).__name__}")
+                self._log(f"[reroute_scene] Scene {scene.id}: JSON parsed (path={result.get('path','?')})")
+            except Exception as parse_err:
+                raise ValueError(f"JSON unrecoverable: {parse_err}")
+        except Exception as e:
+            self._log(f"[reroute_scene] Scene {scene.id}: LLM call failed ({e}) — returning original")
+            return scene
+
+        path = result.get("path", "A")
+        self._log(
+            f"[reroute_scene] Scene {scene.id}: path={path} — {result.get('reasoning', '')}"
+        )
+
+        import dataclasses
+        updated = dataclasses.replace(scene)
+
+        if path == "A":
+            updated = dataclasses.replace(
+                updated,
+                visual_prompt   = result.get("visual_prompt", scene.visual_prompt),
+                zone_allocation = result.get("zone_allocation", scene.zone_allocation),
+                element_count   = result.get("element_count", scene.element_count),
+                visual_reasoning= f"[rerouted] {result.get('reasoning', '')}",
+            )
+            return updated
+
+        else:  # PATH B — subscene split
+            beats = result.get("subscenes", [])
+            if not beats:
+                self._log(f"[reroute_scene] Scene {scene.id}: PATH B but no subscenes returned — falling back to PATH A no-op")
+                return scene
+            # Annotate the scene with new subscene beats so _expand_subscenes
+            # can inflate them in the next parallel_runner cycle
+            updated = dataclasses.replace(
+                updated,
+                visual_reasoning = f"[rerouted+split] {result.get('reasoning', '')}",
+            )
+            # Attach beats directly to scene object for the runner to expand
+            object.__setattr__(updated, "_reroute_beats", beats)
+            return updated
+
     # ── Subscene expansion ────────────────────────────────────────────────────
 
     def _expand_subscenes(

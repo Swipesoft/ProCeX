@@ -118,7 +118,7 @@ class LLMClient:
         image_bytes:      bytes,
         *,
         image_mime:       str           = "image/png",
-        max_tokens:       int           = 2048,
+        max_tokens:       int           = 16384,
         temperature:      float         = 0.1,
         primary_provider: Optional[str] = None,
     ) -> str:
@@ -336,47 +336,12 @@ class LLMClient:
 
     @staticmethod
     def _extract_json(text: str) -> str:
+        """
+        Strip markdown fences and repair malformed LLM JSON output.
+        Uses json-repair to handle truncation, missing commas, single quotes,
+        trailing commas, comments, and extra text — all in one call.
+        """
+        from json_repair import repair_json
         text = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.MULTILINE)
         text = re.sub(r"```\s*$",           "", text.strip(), flags=re.MULTILINE)
-        text = text.strip()
-
-        # Find whichever outermost structure appears first — [ or {
-        # This correctly handles both array responses (VisualDirector) and
-        # dict responses (DomainRouter, ScriptWriter etc.) without either
-        # short-circuiting the other.
-        bracket_pos = text.find('[')
-        brace_pos   = text.find('{')
-
-        if bracket_pos == -1 and brace_pos == -1:
-            return text   # no JSON found
-
-        # Pick the one that appears first; if only one exists, use it
-        if bracket_pos == -1:
-            candidates = [('{', '}')]
-        elif brace_pos == -1:
-            candidates = [('[', ']')]
-        elif bracket_pos < brace_pos:
-            candidates = [('[', ']'), ('{', '}')]
-        else:
-            candidates = [('{', '}'), ('[', ']')]
-
-        for start_char, end_char in candidates:
-            idx = text.find(start_char)
-            if idx == -1:
-                continue
-            depth, in_str, escape = 0, False, False
-            for i, ch in enumerate(text[idx:], idx):
-                if escape:
-                    escape = False; continue
-                if ch == '\\' and in_str:
-                    escape = True;  continue
-                if ch == '"' and not escape:
-                    in_str = not in_str
-                if not in_str:
-                    if ch == start_char: depth += 1
-                    elif ch == end_char:
-                        depth -= 1
-                        if depth == 0:
-                            return text[idx:i+1]
-
-        return text
+        return repair_json(text.strip(), ensure_ascii=False)

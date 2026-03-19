@@ -6,6 +6,10 @@ anthropic>=0.40.0
 google-genai>=1.0.0
 openai>=1.50.0
 
+# JSON fixes
+json-repair
+
+
 # TTS
 elevenlabs>=1.0.0
 

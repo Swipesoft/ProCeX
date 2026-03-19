@@ -196,7 +196,9 @@ def run_generation_render_pipeline(
     from agents.manim_coder     import ManimCoder, _fallback_scene
     from agents.image_gen_agent import ImageGenAgent
     from agents.renderer        import RendererAgent, REGEN_RETRIES
-    from agents.vlm_critic      import VLMCritic
+    from agents.vlm_critic      import VLMCritic, MAX_REROUTE_ATTEMPTS
+    from agents.visual_director import VisualDirector
+    from config                 import RESOLUTIONS
 
     manim_dir  = cfg.dirs["manim"]
     scenes_dir = cfg.dirs["scenes"]
@@ -208,6 +210,7 @@ def run_generation_render_pipeline(
     imager   = ImageGenAgent(cfg, llm)
     renderer = RendererAgent(cfg, llm)
     critic   = VLMCritic(cfg, llm)
+    director = VisualDirector(cfg, llm)
 
     # Classify scenes by their initial strategy
     manim_scenes  = [s for s in state.scenes if s.visual_strategy in
@@ -215,7 +218,7 @@ def run_generation_render_pipeline(
     image_scenes  = [s for s in state.scenes if s.visual_strategy in
                      (VisualStrategy.IMAGE_GEN,)]
 
-    total_scenes  = len(state.scenes)
+    total_scenes  = [len(state.scenes)]
     print(f"[Parallel] Stage B: {len(manim_scenes)} Manim, {len(image_scenes)} image scenes")
 
     # ── Queues ────────────────────────────────────────────────────────────
@@ -238,7 +241,6 @@ def run_generation_render_pipeline(
         with done_lock:
             done_count[0] += 1
 
-    from config import RESOLUTIONS
     res    = RESOLUTIONS.get(state.resolution, RESOLUTIONS["1080p"])
     aspect = res.aspect_ratio
 
@@ -356,9 +358,58 @@ def run_generation_render_pipeline(
             scene = task.scene
             log(f"Renderer-{wid}: Scene {scene.id} rendering (attempt {task.attempt+1})...")
 
-            clip_path, error = renderer.render_with_critic(
+            clip_path, error, critic_result = renderer.render_with_critic(
                 scene, state.resolution, scenes_dir, critic=critic
             )
+
+            # ── Critic reroute ────────────────────────────────────────────────
+            # Reroute: Critic saw the peak-density frame and decided the scene
+            # needs structural re-planning, not just positional patching.
+            # We call VisualDirector.reroute_scene() with the frame — it decides
+            # PATH A (revise layout) or PATH B (split into beats) freely.
+            if (critic_result and critic_result.status == "reroute"
+                    and critic_result.reroute_frame is not None):
+                reroute_attempts = getattr(scene, "critic_reroute_attempts", 0) or 0
+                log(
+                    f"Renderer-{wid}: Scene {scene.id} — Critic rerouting to "
+                    f"VisualDirector (attempt {reroute_attempts+1}/{MAX_REROUTE_ATTEMPTS})"
+                )
+                try:
+                    import dataclasses
+                    updated = director.reroute_scene(
+                        scene, critic_result.reroute_frame, aspect=getattr(
+                            RESOLUTIONS.get(state.resolution,
+                            RESOLUTIONS["1080p"]), "aspect_ratio", "16:9"
+                        )
+                    )
+                    # Increment reroute counter before re-queuing
+                    updated = dataclasses.replace(
+                        updated,
+                        critic_reroute_attempts = reroute_attempts + 1,
+                        clip_path = "",   # clear stale clip
+                    )
+                    # If VisualDirector chose PATH B, expand subscenes first
+                    reroute_beats = getattr(updated, "_reroute_beats", None)
+                    if reroute_beats:
+                        log(f"Renderer-{wid}: Scene {scene.id} — reroute PATH B: "
+                            f"expanding into {len(reroute_beats)} subscenes")
+                        expanded = director._expand_subscenes(
+                            [updated], [(updated.id, reroute_beats)]
+                        )
+                        for sub in expanded:
+                            code_queue.put(SceneTask(scene=sub, attempt=0))
+                        # Remove original from done tracking, add subscenes
+                        with done_lock:
+                            total_scenes[0] += len(expanded) - 1
+                    else:
+                        # PATH A — re-queue updated scene for fresh render
+                        code_queue.put(SceneTask(scene=updated, attempt=0))
+                    continue   # don't mark_done — new render is pending
+                except Exception as e:
+                    log(f"Renderer-{wid}: Scene {scene.id} — reroute failed ({e}), "
+                        f"keeping original clip")
+                    mark_done(scene, clip_path)
+                    continue
 
             if clip_path:
                 log(f"Renderer-{wid}: Scene {scene.id} ✓")
@@ -410,7 +461,7 @@ def run_generation_render_pipeline(
     # ── Launch coder workers ──────────────────────────────────────────────
 
     n_coders    = max(1, min(len(state.scenes), cfg.coder_workers))
-    n_renderers = max(1, min(total_scenes, cfg.render_workers))
+    n_renderers = max(1, min(total_scenes[0], cfg.render_workers))
     threads     = []
 
     for i in range(n_coders):
@@ -446,11 +497,11 @@ def run_generation_render_pipeline(
         while True:
             with done_lock:
                 n_done = done_count[0]
-            if n_done >= total_scenes:
+            if n_done >= total_scenes[0]:
                 break
             now = time.time()
             if now - last_log >= 30:
-                log(f"Progress: {n_done}/{total_scenes} done ({(now-start)/60:.1f} min elapsed)")
+                log(f"Progress: {n_done}/{total_scenes[0]} done ({(now-start)/60:.1f} min elapsed)")
                 last_log = now
             time.sleep(0.5)
     except KeyboardInterrupt:
@@ -478,7 +529,7 @@ def run_generation_render_pipeline(
 
     elapsed = time.time() - start
     log(
-        f"Stage B complete: {len(state.rendered_clips)}/{total_scenes} clips "
+        f"Stage B complete: {len(state.rendered_clips)}/{total_scenes[0]} clips "
         f"in {elapsed/60:.1f} min"
     )
     return state

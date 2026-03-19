@@ -57,11 +57,13 @@ from utils.spatial_grid import (
 
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
-CRITIC_DENSITY_THRESHOLD = 2   # element count >= this triggers critic (was 3)
-CRITIC_MAX_PATCHES       = 5   # max correction actions per scene
-PATCH_MAX_TOKENS         = 4096
-VISION_MAX_TOKENS        = 4096   # needs room for full JSON with issues list
-KEYFRAME_OFFSETS         = [0.25, 0.50, 0.75]  # sample at 25%, 50%, 75% of clip
+CRITIC_DENSITY_THRESHOLD  = 2   # element count >= this triggers critic
+CRITIC_MAX_PATCHES        = 5   # max correction actions per scene
+PATCH_MAX_TOKENS          = 16384
+VISION_MAX_TOKENS         = 16384
+KEYFRAME_OFFSETS          = [0.75, 0.88, 0.97]  # peak density window
+MAX_REROUTE_ATTEMPTS      = 2   # max times a scene can be sent back to VisualDirector
+REROUTE_DENSITY_THRESHOLD = 7   # density score >= this → reroute rather than patch
 
 
 # ── Result dataclass ──────────────────────────────────────────────────────────
@@ -77,10 +79,12 @@ class CriticIssue:
 
 @dataclass
 class CriticResult:
-    status:         str            # "ok" | "patched" | "split_needed"
+    status:         str            # "ok" | "patched" | "reroute" | "split_needed"
     issues:         list           = field(default_factory=list)
     patched_code:   Optional[str]  = None
-    reason:         str            = ""   # explanation for logging
+    reason:         str            = ""
+    # "reroute": peak-density frame passed back to VisualDirector for re-planning
+    reroute_frame:  Optional[bytes] = None  # raw JPEG bytes of the worst frame
 
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
@@ -281,18 +285,51 @@ class VLMCritic(BaseAgent):
         )
 
         split_recommended = vision_result.get("split_recommended", False)
+        density_int       = int(density) if str(density).isdigit() else 0
+        reroute_attempts  = getattr(scene, "critic_reroute_attempts", 0) or 0
+
+        # ── Reroute decision ──────────────────────────────────────────────────
+        # The Critic decides the remediation path here. Policy lives only here —
+        # VisualDirector.reroute_scene() receives the frame and re-plans freely.
+        #
+        # Reroute when: density is structurally too high for repositioning alone,
+        # OR split is explicitly recommended, AND budget allows.
+        # Patch when: collision is a positional fix (low-medium density).
+        # Split (final) when: reroute budget exhausted.
+        should_reroute = (
+            split_recommended or density_int >= REROUTE_DENSITY_THRESHOLD
+        ) and reroute_attempts < MAX_REROUTE_ATTEMPTS
+
+        if should_reroute:
+            # Pass the peak-density frame (last = 97%) back to VisualDirector.
+            # No issue list — VisualDirector gets full creative freedom to
+            # re-plan layout or split into beats as it sees fit.
+            peak_frame = frames[-1] if frames else None
+            self._log(
+                f"Scene {scene.id}: rerouting to VisualDirector "
+                f"(density={density}/10, attempts={reroute_attempts+1}/{MAX_REROUTE_ATTEMPTS})"
+            )
+            return CriticResult(
+                status        = "reroute",
+                issues        = issues,
+                reason        = reasoning or "structural density overflow",
+                reroute_frame = peak_frame,
+            )
+
+        if split_recommended and reroute_attempts >= MAX_REROUTE_ATTEMPTS:
+            # Budget exhausted — flag for orchestrator-level split
+            self._log(
+                f"Scene {scene.id}: reroute budget exhausted ({reroute_attempts}/{MAX_REROUTE_ATTEMPTS}) "
+                f"— flagging as split_needed"
+            )
+            return CriticResult(
+                status = "split_needed",
+                issues = issues,
+                reason = reasoning or "density overflow, reroute budget exhausted",
+            )
 
         # ── Guard: no point patching if no actionable issues ─────────────────
         if not issues:
-            if split_recommended:
-                self._log(
-                    f"Scene {scene.id}: split recommended (density={density}/10) "
-                    f"but no patchable issues — flagging for orchestrator"
-                )
-                return CriticResult(
-                    status = "split_needed",
-                    reason = reasoning or "density overflow, no patchable issues",
-                )
             self._log(f"Scene {scene.id}: collision detected but no actionable issues — passing as-is")
             return CriticResult(
                 status = "ok",
@@ -300,19 +337,11 @@ class VLMCritic(BaseAgent):
             )
 
         # ── Stage 2: Claude patches the code ─────────────────────────────────
-        # Patch first even if split is recommended — corrections may reduce
-        # density enough that the split becomes unnecessary.
+        # Reached when density is moderate and collision is positional.
         self._log(f"Scene {scene.id}: [stage 2] sending {len(issues)} correction(s) to Claude patcher...")
         patched = self._run_code_patch(code, issues, scene, aspect=aspect)
         if not patched or patched == code:
             self._log(f"Scene {scene.id}: patch produced no change — passing as-is")
-            if split_recommended:
-                self._log(f"Scene {scene.id}: split still recommended after no-op patch (density={density}/10)")
-                return CriticResult(
-                    status = "split_needed",
-                    issues = issues,
-                    reason = reasoning or "density overflow",
-                )
             return CriticResult(
                 status  = "ok",
                 issues  = issues,
@@ -329,18 +358,12 @@ class VLMCritic(BaseAgent):
                 self._log(f"Scene {scene.id}: could not write patched code — {e}")
                 return CriticResult(status="ok", reason=f"file write failed: {e}")
 
-        self._log(
-            f"Scene {scene.id}: {len(issues)} collision(s) patched \u2192 queued for re-render"
-            + (f" (split also recommended — density={density}/10)" if split_recommended else "")
-        )
+        self._log(f"Scene {scene.id}: {len(issues)} collision(s) patched → queued for re-render")
         return CriticResult(
             status       = "patched",
             issues       = issues,
             patched_code = patched,
-            reason       = (
-                f"patched+split_recommended:{reasoning}" if split_recommended
-                else reasoning or "collisions corrected"
-            ),
+            reason       = reasoning or "collisions corrected",
         )
 
     # ── Gate ──────────────────────────────────────────────────────────────────
@@ -492,29 +515,26 @@ class VLMCritic(BaseAgent):
             except json.JSONDecodeError:
                 pass
 
-            # Repair: remove trailing commas, try closing truncated JSON
+            # Use json-repair to handle all malformed JSON cases:
+            # truncation, missing commas, single quotes, trailing commas, etc.
+            from json_repair import repair_json
             import re as _re
-            cleaned = _re.sub(r",\s*([}\]])", r"\1", raw)
-            for suffix in ["", '"', '"}', '"}}', '"]}', ']}', '}']:
-                try:
-                    result = json.loads(cleaned + suffix)
-                    if isinstance(result, dict):
-                        self._log(f"Vision JSON repaired with suffix={repr(suffix)}")
-                        return result
-                except json.JSONDecodeError:
-                    pass
+            try:
+                result = json.loads(repair_json(raw, ensure_ascii=False))
+                if isinstance(result, dict):
+                    self._log("Vision JSON repaired via json-repair")
+                    return result
+            except Exception:
+                pass
 
-            # Last resort: extract boolean fields via regex
-            collision = bool(_re.search(r'"collision_detected"\s*:\s*true', cleaned, _re.I))
-            split     = bool(_re.search(r'"split_recommended"\s*:\s*true', cleaned, _re.I))
-            score_m   = _re.search(r'"density_score"\s*:\s*(\d+)', cleaned)
+            # Last resort: regex extraction of boolean fields from severely malformed output
+            collision = bool(_re.search(r'"collision_detected"\s*:\s*true', raw, _re.I))
+            score_m   = _re.search(r'"density_score"\s*:\s*(\d+)', raw)
             score     = int(score_m.group(1)) if score_m else 0
             self._log(f"Vision JSON fallback parse: collision={collision} score={score}")
-            # Never trust split_recommended from a truncated response — no issues were parsed
-            # so we can't verify it. Return collision only if score is very high.
             return {
                 "collision_detected": collision and score >= 7,
-                "split_recommended":  False,   # don't split on truncated evidence
+                "split_recommended":  False,
                 "density_score":      score,
                 "issues":             [],
                 "reasoning":          "Partial parse — truncated response",

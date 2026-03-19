@@ -370,7 +370,7 @@ class ManimCoder(BaseAgent):
                                         aspect=aspect,
 ),
                     json_mode=False,
-                    max_tokens=6144,
+                    max_tokens=16384,
                     temperature=0.3,
                     primary_provider="claude",
                 )

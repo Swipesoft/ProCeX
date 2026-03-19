@@ -133,7 +133,7 @@ class ProcExConfig:
 
     # ── LLM Models (text) ─────────────────────
     # Fallback chain: Claude → Gemini → OpenAI
-    claude_model:        str = "claude-sonnet-4-6" # "claude-opus-4-6"
+    claude_model:        str = "claude-sonnet-4-6"
     gemini_text_model:   str = "gemini-3-flash-preview"
     openai_model:        str = "gpt-5.4-2026-03-05"
 
@@ -165,19 +165,30 @@ class ProcExConfig:
     # ── Image Generation (NanoBanana) ─────────
     # Pro  → detailed anatomy, labeled diagrams, search grounding
     # Fast → background images, simpler visuals, hybrid scenes
-    nano_pro_model:      str = "gemini-3.1-flash-image-preview"# "gemini-3-pro-image-preview"
+    nano_pro_model:      str = "gemini-3-pro-image-preview"
     nano_fast_model:     str = "gemini-3.1-flash-image-preview"
 
     # ── ElevenLabs (legacy) ───────────────────
     elevenlabs_voice_id: str = "JBFqnCBsd6RMkjVDRZzb"
     elevenlabs_model:    str = "eleven_multilingual_v2"
 
-    # ── OpenAI TTS (active, pay-as-you-go) ────
+    # ── OpenAI TTS ────────────────────────────
     # tts-1    = $15/1M chars (~$0.15 per 10-min video)
     # tts-1-hd = $30/1M chars (~$0.30 per 10-min video, higher quality)
     # Voices: onyx (deep/authoritative), nova, alloy, echo, fable, shimmer
     openai_tts_model:    str = "tts-1"
     openai_tts_voice:    str = "onyx"
+
+    # ── Gemini TTS (default) ──────────────────
+    # gemini-2.5-flash-preview-tts — high-quality, expressive narration
+    # Voices: Aoede, Charon, Fenrir, Kore, Orus, Puck, Schedar, Sulafat...
+    gemini_tts_model:    str = "gemini-2.5-flash-preview-tts"
+    gemini_tts_voice:    str = "Aoede"
+
+    # ── TTS provider selection ────────────────
+    # "gemini"  → Gemini 2.5 Flash TTS (default, uses GEMINI_API_KEY)
+    # "openai"  → OpenAI TTS (fallback, uses OPENAI_API_KEY)
+    tts_provider:        str = "gemini"
 
     # ── Pipeline ──────────────────────────────
     max_llm_retries:     int   = 3
@@ -223,6 +234,6 @@ class ProcExConfig:
             issues.append("GEMINI_API_KEY not set — Gemini + NanoBanana unavailable")
         if not self.openai_api_key:
             issues.append("OPENAI_API_KEY not set — OpenAI fallback unavailable")
-        if not self.elevenlabs_api_key and not self.openai_api_key:
-            issues.append("No TTS key set — set OPENAI_API_KEY (recommended) or ELEVENLABS_API_KEY")
+        if not self.elevenlabs_api_key and not self.openai_api_key and not self.gemini_api_key:
+            issues.append("No TTS key set — set GEMINI_API_KEY (recommended) or OPENAI_API_KEY")
         return issues

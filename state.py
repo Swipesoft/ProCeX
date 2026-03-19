@@ -93,6 +93,9 @@ class Scene:
     parent_scene_id:     Optional[int] = None   # original scene id this was split from
     subscene_index:      int = 0                 # position within parent (0 = not a subscene)
 
+    # Critic feedback loop — capped at 2 reroutes per scene
+    critic_reroute_attempts: int = 0
+
 
 # ─────────────────────────────────────────────
 # Pipeline State

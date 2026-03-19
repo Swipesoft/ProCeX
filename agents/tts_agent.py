@@ -1,24 +1,32 @@
 """
 agents/tts_agent.py
 
-TTS via OpenAI Audio API (pay-as-you-go, no subscription).
-  tts-1    = $15/1M chars  (~$0.15 per 10-min video)
-  tts-1-hd = $30/1M chars  (~$0.30 per 10-min video, better quality)
-  Voices: onyx (deep/authoritative), nova, alloy, echo, fable, shimmer
+TTS with provider routing — Gemini (default) or OpenAI (fallback).
 
-OpenAI TTS does not return word-level timestamps. We estimate them by:
+Gemini TTS (gemini-2.5-flash-preview-tts):
+  - High-quality, expressive narration via google-genai SDK
+  - Returns raw PCM L16 audio — converted to WAV then MP3 via ffmpeg
+  - Voice: Aoede (default). Others: Charon, Fenrir, Kore, Orus, Puck...
+  - Uses GEMINI_API_KEY (same key used for VisualDirector / VLMCritic)
+
+OpenAI TTS (tts-1 / tts-1-hd):
+  - Kept fully intact as fallback
+  - tts-1    = $15/1M chars, tts-1-hd = $30/1M chars
+  - Voices: onyx, nova, alloy, echo, fable, shimmer
+
+Neither provider returns word-level timestamps. We estimate them by:
   1. Probing actual audio duration with ffprobe
-  2. Distributing word timestamps proportionally across that duration
-     (proportional to char position within the text)
+  2. Distributing word timestamps proportionally by character position
 This gives ~+-0.3s accuracy, sufficient for Manim animation sync.
 
-Narration text is pre-processed by _clean_narration_for_tts() before sending
-to the API — this converts raw math/LaTeX notation into spoken equivalents so
-the voice doesn't spell out "X transpose T dot W alpha" letter by letter.
+Set tts_provider = "gemini" | "openai" in config.py.
 """
 from __future__ import annotations
 import os
 import re
+import struct
+import wave
+import io
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import subprocess
 import tempfile
@@ -33,8 +41,98 @@ class TTSAgent(BaseAgent):
     name = "TTSAgent"
 
     def run(self, state: ProcExState) -> ProcExState:
-        self._log("Generating TTS audio via OpenAI (pay-as-you-go)...")
+        provider = (self.cfg.tts_provider or "gemini").lower()
+        self._log(f"Generating TTS audio via {provider.upper()}...")
 
+        if provider == "gemini":
+            return self._run_gemini(state)
+        else:
+            return self._run_openai(state)
+
+    # ── Gemini TTS ────────────────────────────────────────────────────────────
+
+    def _run_gemini(self, state: ProcExState) -> ProcExState:
+        try:
+            from google import genai
+            from google.genai import types
+        except ImportError:
+            raise ImportError("google-genai SDK required: pip install google-genai")
+
+        if not self.cfg.gemini_api_key:
+            raise RuntimeError(
+                "GEMINI_API_KEY not set. Add it to your .env file."
+            )
+
+        client    = genai.Client(api_key=self.cfg.gemini_api_key)
+        audio_dir = self.cfg.dirs["audio"]
+        os.makedirs(audio_dir, exist_ok=True)
+
+        generate_config = types.GenerateContentConfig(
+            temperature          = 1.0,
+            response_modalities  = ["AUDIO"],
+            speech_config        = types.SpeechConfig(
+                voice_config = types.VoiceConfig(
+                    prebuilt_voice_config = types.PrebuiltVoiceConfig(
+                        voice_name = self.cfg.gemini_tts_voice,
+                    )
+                )
+            ),
+        )
+
+        def _process_scene_gemini(scene):
+            """Call Gemini TTS for one scene, save as MP3. Thread-safe."""
+            raw_text = scene.narration_text.strip()
+            if not raw_text:
+                return scene, None, 0.0
+
+            text       = self._clean_narration_for_tts(raw_text)
+            chunk_path = os.path.join(
+                audio_dir, f"{state.topic_slug}_scene_{scene.id:02d}.mp3"
+            )
+            self._log(f"Scene {scene.id}: {len(text)} chars -> Gemini TTS ({self.cfg.gemini_tts_voice})...")
+
+            try:
+                # Collect all PCM chunks from streaming response
+                pcm_data = b""
+                mime_type = "audio/L16;rate=24000"
+                for chunk in client.models.generate_content_stream(
+                    model    = self.cfg.gemini_tts_model,
+                    contents = text,
+                    config   = generate_config,
+                ):
+                    if not chunk.parts:
+                        continue
+                    part = chunk.parts[0]
+                    if part.inline_data and part.inline_data.data:
+                        pcm_data  += part.inline_data.data
+                        mime_type  = part.inline_data.mime_type or mime_type
+
+                if not pcm_data:
+                    raise RuntimeError("Gemini TTS returned no audio data")
+
+                # Convert PCM L16 → WAV → MP3 via ffmpeg
+                wav_bytes = self._pcm_to_wav(pcm_data, mime_type)
+                self._wav_to_mp3(wav_bytes, chunk_path)
+
+            except Exception as e:
+                self._log(f"Scene {scene.id} Gemini TTS failed: {e} — writing silence")
+                chunk_path = self._write_silence(scene.duration_seconds, chunk_path)
+                return scene, chunk_path, scene.duration_seconds
+
+            chunk_duration = self._probe_duration(chunk_path)
+            if chunk_duration <= 0:
+                chunk_duration = len(text.split()) / 2.8
+
+            scene._tts_relative_ts = self._build_timestamps(text, chunk_duration)
+            return scene, chunk_path, chunk_duration
+
+        return self._run_parallel_and_assemble(
+            state, _process_scene_gemini, provider="gemini"
+        )
+
+    # ── OpenAI TTS ────────────────────────────────────────────────────────────
+
+    def _run_openai(self, state: ProcExState) -> ProcExState:
         try:
             from openai import OpenAI
         except ImportError:
@@ -50,12 +148,8 @@ class TTSAgent(BaseAgent):
         audio_dir = self.cfg.dirs["audio"]
         os.makedirs(audio_dir, exist_ok=True)
 
-        scene_audio_paths: list[str]           = []
-        all_timestamps:    list[WordTimestamp]  = []
-        time_offset = 0.0
-
-        def _process_scene(scene):
-            """Process one scene: TTS call + duration probe + timestamps. Thread-safe."""
+        def _process_scene_openai(scene):
+            """Call OpenAI TTS for one scene, save as MP3. Thread-safe."""
             raw_text = scene.narration_text.strip()
             if not raw_text:
                 return scene, None, 0.0
@@ -64,7 +158,7 @@ class TTSAgent(BaseAgent):
             chunk_path = os.path.join(
                 audio_dir, f"{state.topic_slug}_scene_{scene.id:02d}.mp3"
             )
-            self._log(f"Scene {scene.id}: {len(text)} chars -> OpenAI TTS...")
+            self._log(f"Scene {scene.id}: {len(text)} chars -> OpenAI TTS ({self.cfg.openai_tts_voice})...")
 
             try:
                 response = client.audio.speech.create(
@@ -75,7 +169,7 @@ class TTSAgent(BaseAgent):
                 )
                 response.stream_to_file(chunk_path)
             except Exception as e:
-                self._log(f"Scene {scene.id} TTS failed: {e}")
+                self._log(f"Scene {scene.id} OpenAI TTS failed: {e}")
                 chunk_path = self._write_silence(scene.duration_seconds, chunk_path)
                 return scene, chunk_path, scene.duration_seconds
 
@@ -83,36 +177,34 @@ class TTSAgent(BaseAgent):
             if chunk_duration <= 0:
                 chunk_duration = len(text.split()) / 2.8
 
-            # Build per-scene word timestamps (relative, offset applied later)
-            words       = text.split()
-            total_chars = len(text)
-            char_cursor = 0
-            scene_ts    = []
-            for word in words:
-                sr = char_cursor / max(total_chars, 1)
-                er = (char_cursor + len(word)) / max(total_chars, 1)
-                scene_ts.append(WordTimestamp(
-                    word  = word,
-                    start = round(sr * chunk_duration, 4),
-                    end   = round(er * chunk_duration, 4),
-                ))
-                char_cursor += len(word) + 1
-            scene._tts_relative_ts = scene_ts   # stash for offset application below
+            scene._tts_relative_ts = self._build_timestamps(text, chunk_duration)
             return scene, chunk_path, chunk_duration
 
-        # Run TTS calls in parallel
+        return self._run_parallel_and_assemble(
+            state, _process_scene_openai, provider="openai"
+        )
+
+    # ── Shared parallel runner + assembler ───────────────────────────────────
+
+    def _run_parallel_and_assemble(
+        self, state: ProcExState, process_fn, provider: str
+    ) -> ProcExState:
+        audio_dir         = self.cfg.dirs["audio"]
+        scene_audio_paths = []
+        all_timestamps    = []
+        time_offset       = 0.0
+
         max_tts_workers = min(len(state.scenes), self.cfg.tts_workers)
         scene_results   = {}  # scene.id -> (chunk_path, duration)
 
         with ThreadPoolExecutor(max_workers=max_tts_workers) as pool:
-            futures = {pool.submit(_process_scene, s): s for s in state.scenes}
+            futures = {pool.submit(process_fn, s): s for s in state.scenes}
             for fut in as_completed(futures):
                 s, chunk_path, dur = fut.result()
                 if chunk_path:
                     scene_results[s.id] = (chunk_path, dur)
                     self._log(f"Scene {s.id}: {dur:.1f}s TTS done")
 
-        # Apply global time offsets in scene order (must be sequential)
         for scene in state.scenes:
             if scene.id not in scene_results:
                 continue
@@ -123,7 +215,6 @@ class TTSAgent(BaseAgent):
             scene.tts_duration     = chunk_duration
             scene_audio_paths.append(chunk_path)
 
-            # Apply cumulative offset to relative timestamps
             relative_ts = getattr(scene, "_tts_relative_ts", [])
             scene.timestamps = [
                 WordTimestamp(
@@ -137,13 +228,12 @@ class TTSAgent(BaseAgent):
             time_offset += chunk_duration
             self._log(f"Scene {scene.id}: offset applied, cumulative={time_offset:.1f}s")
 
-        # Concatenate all chunks into final audio file
         final_audio = os.path.join(audio_dir, f"{state.topic_slug}.mp3")
 
         if not scene_audio_paths:
             raise RuntimeError(
-                "No audio generated. Check OPENAI_API_KEY and account credits at "
-                "https://platform.openai.com/account/usage"
+                f"No audio generated via {provider}. "
+                f"Check your API key and account status."
             )
         elif len(scene_audio_paths) == 1:
             shutil.copy2(scene_audio_paths[0], final_audio)
@@ -155,17 +245,102 @@ class TTSAgent(BaseAgent):
         state.total_audio_duration = time_offset
 
         total_chars = sum(len(s.narration_text) for s in state.scenes)
-        cost_est    = total_chars / 1_000_000 * (
-            30.0 if "hd" in self.cfg.openai_tts_model else 15.0
-        )
+        if provider == "openai":
+            cost_est = total_chars / 1_000_000 * (
+                30.0 if "hd" in self.cfg.openai_tts_model else 15.0
+            )
+            cost_str = f"est. cost ${cost_est:.4f}"
+        else:
+            cost_str = "Gemini TTS (see Google AI pricing)"
+
         self._log(
             f"Audio ready -> {final_audio}\n"
             f"  {time_offset:.1f}s ({time_offset/60:.1f} min) | "
             f"{len(all_timestamps)} word timestamps | "
-            f"est. cost ${cost_est:.4f}"
+            f"{cost_str}"
         )
-
         return state
+
+    # ── Gemini PCM helpers ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _parse_mime_audio_params(mime_type: str) -> dict:
+        """Extract bits_per_sample and rate from audio/L16;rate=24000."""
+        bits_per_sample = 16
+        rate            = 24000
+        for part in mime_type.split(";"):
+            part = part.strip()
+            if part.lower().startswith("rate="):
+                try:
+                    rate = int(part.split("=", 1)[1])
+                except (ValueError, IndexError):
+                    pass
+            elif part.startswith("audio/L"):
+                try:
+                    bits_per_sample = int(part.split("L", 1)[1])
+                except (ValueError, IndexError):
+                    pass
+        return {"bits_per_sample": bits_per_sample, "rate": rate}
+
+    def _pcm_to_wav(self, pcm_data: bytes, mime_type: str) -> bytes:
+        """Wrap raw PCM L16 bytes in a proper WAV container."""
+        params          = self._parse_mime_audio_params(mime_type)
+        bits_per_sample = params["bits_per_sample"]
+        sample_rate     = params["rate"]
+        num_channels    = 1
+        data_size       = len(pcm_data)
+        bytes_per_sample = bits_per_sample // 8
+        block_align     = num_channels * bytes_per_sample
+        byte_rate       = sample_rate * block_align
+        chunk_size      = 36 + data_size
+
+        header = struct.pack(
+            "<4sI4s4sIHHIIHH4sI",
+            b"RIFF", chunk_size, b"WAVE",
+            b"fmt ", 16, 1, num_channels,
+            sample_rate, byte_rate, block_align,
+            bits_per_sample, b"data", data_size,
+        )
+        return header + pcm_data
+
+    def _wav_to_mp3(self, wav_bytes: bytes, output_path: str) -> None:
+        """Convert WAV bytes to MP3 file via ffmpeg pipe."""
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "wav", "-i", "pipe:0",
+            "-c:a", "libmp3lame", "-q:a", "2",
+            output_path,
+        ]
+        result = subprocess.run(
+            cmd,
+            input           = wav_bytes,
+            capture_output  = True,
+            timeout         = 120,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"WAV→MP3 conversion failed:\n{result.stderr[-500:].decode('utf-8', errors='replace')}"
+            )
+
+    # ── Shared timestamp builder ──────────────────────────────────────────────
+
+    @staticmethod
+    def _build_timestamps(text: str, duration: float) -> list:
+        """Proportional word timestamps from character positions."""
+        words       = text.split()
+        total_chars = len(text)
+        char_cursor = 0
+        ts          = []
+        for word in words:
+            sr = char_cursor / max(total_chars, 1)
+            er = (char_cursor + len(word)) / max(total_chars, 1)
+            ts.append(WordTimestamp(
+                word  = word,
+                start = round(sr * duration, 4),
+                end   = round(er * duration, 4),
+            ))
+            char_cursor += len(word) + 1
+        return ts
 
     # ── Narration preprocessor ────────────────────────────────────────────────
 

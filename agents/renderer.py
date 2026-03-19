@@ -26,7 +26,7 @@ from agents.vlm_critic import VLMCritic, CriticResult
 
 
 # Maximum number of regenerate-and-retry cycles per scene before black fallback
-REGEN_RETRIES = 5
+REGEN_RETRIES = 2
 
 
 class RendererAgent(BaseAgent):
@@ -105,22 +105,24 @@ class RendererAgent(BaseAgent):
     ) -> tuple:
         """
         Render once, then run the VLM Critic if available.
-        Used by parallel_runner's render_worker in place of render_scene_once.
+
+        Returns (clip_path, error, critic_result) — caller unpacks all three.
 
         Flow:
-          1. render_scene_once  → if fails, return (None, error) immediately
+          1. render_scene_once  → if fails, return (None, error, None)
           2. critic.inspect()   → CriticResult
-             "ok"           → return (clip_path, None) as-is
+             "ok"           → return (clip_path, None, result)
              "patched"      → re-render once with corrected code
-                               (uses one slot from caller's retry budget)
+             "reroute"      → return (clip_path, None, result) with result.reroute_frame
+                               parallel_runner calls VisualDirector.reroute_scene()
+                               and re-queues the scene for a fresh render
              "split_needed" → flag scene._split_recommended = True,
-                               return original clip (split handled by orchestrator
-                               in a future pass — current clip used as fallback)
+                               return original clip as fallback
         """
         clip_path, error = self.render_scene_once(scene, resolution, out_dir)
 
         if error or critic is None:
-            return clip_path, error
+            return clip_path, error, None
 
         # ── VLM Critic inspection ─────────────────────────────────────────────
         from config import RESOLUTIONS
@@ -130,10 +132,17 @@ class RendererAgent(BaseAgent):
             result: CriticResult = critic.inspect(clip_path, scene, aspect=aspect)
         except Exception as e:
             self._log(f"Scene {scene.id}: critic error (non-fatal): {e}")
-            return clip_path, None
+            return clip_path, None, None
 
         if result.status == "ok":
-            return clip_path, None
+            return clip_path, None, result
+
+        if result.status == "reroute":
+            self._log(
+                f"Scene {scene.id}: Critic recommends reroute to VisualDirector — "
+                f"{result.reason}"
+            )
+            return clip_path, None, result   # caller handles reroute loop
 
         if result.status == "split_needed":
             self._log(
@@ -141,24 +150,23 @@ class RendererAgent(BaseAgent):
                 f"{result.reason}. Flagging for orchestrator."
             )
             scene._split_recommended = True
-            return clip_path, None   # return original clip as-is
+            return clip_path, None, result
 
         if result.status == "patched":
             self._log(
                 f"Scene {scene.id}: Critic patched {len(result.issues)} "
                 f"collision(s) — re-rendering..."
             )
-            # One critic re-render (does not consume REGEN_RETRIES budget)
             new_clip, new_err = self.render_scene_once(scene, resolution, out_dir)
             if new_err:
                 self._log(
                     f"Scene {scene.id}: critic re-render failed ({new_err}) "
                     f"— keeping original"
                 )
-                return clip_path, None   # return original; don't escalate
-            return new_clip, None
+                return clip_path, None, result
+            return new_clip, None, result
 
-        return clip_path, None
+        return clip_path, None, result
 
     # ── Render with regeneration loop ─────────────────────────────────────────
 
