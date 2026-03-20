@@ -391,13 +391,15 @@ class VisualDirector(BaseAgent):
         scene,
         frame_bytes: bytes,
         aspect: str = "16:9",
+        force_split: bool = False,
     ):
         """
-        Called by parallel_runner when VLMCritic returns status="reroute".
+        Called by parallel_runner when VLMCritic returns status="reroute"
+        or status="split_needed".
 
-        Receives the peak-density frame (75-100% into the clip) and the
-        original scene object. Returns a replacement Scene with updated
-        visual_prompt, zone_allocation, element_count, and subscenes.
+        force_split=True: used when split_needed fires (reroute budget exhausted).
+        VisualDirector is told PATH B is mandatory — repositioning has already
+        been tried twice and failed. It only decides HOW to split.
 
         Separation of concern: this method receives NO issue list from the
         Critic. It sees only the frame and the original scene intent. This
@@ -411,7 +413,21 @@ class VisualDirector(BaseAgent):
         zone_list = ", ".join(zones.keys())
         b64_frame = base64.b64encode(frame_bytes).decode("utf-8")
 
-        system_prompt = """\
+        if force_split:
+            system_prompt = """\
+You are an expert visual layout designer for educational animation videos.
+You will receive a frame from a Manim animation and its original visual intent.
+Repositioning elements has already been attempted twice and failed — the scene
+is structurally too dense for a single frame.
+
+YOUR ONLY TASK IS PATH B — SPLIT INTO SUBSCENES:
+  Divide the content into 2-3 sequential beats, each covering ONE distinct
+  teaching point with its own clean, uncluttered layout.
+  Do NOT suggest revising the layout (PATH A) — that has already been tried.
+
+Respond ONLY with valid JSON — no preamble, no markdown fences."""
+        else:
+            system_prompt = """\
 You are an expert visual layout designer for educational animation videos.
 You will receive a frame from a Manim animation and its original visual intent.
 Your job is to decide ONE of two remediation paths:
@@ -427,6 +443,13 @@ PATH B — SPLIT INTO SUBSCENES:
   each covering a distinct teaching point with its own clean layout.
 
 Respond ONLY with valid JSON — no preamble, no markdown fences."""
+
+        task_instruction = (
+            "You MUST use PATH B — split into subscenes. Do not choose PATH A.\n"
+            "Decide only HOW to split: what content goes in each beat."
+            if force_split else
+            "Look at the rendered frame carefully.\nDecide: PATH A (revise layout) or PATH B (split into subscenes)?"
+        )
 
         user_prompt = f"""ORIGINAL SCENE INTENT
 =====================
@@ -445,8 +468,7 @@ RENDERED FRAME (peak density at ~90% of clip duration)
 
 TASK
 ====
-Look at the rendered frame carefully.
-Decide: PATH A (revise layout) or PATH B (split into subscenes)?
+{task_instruction}
 
 Respond with this JSON schema:
 

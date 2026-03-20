@@ -120,7 +120,11 @@ L4. MathTex with >2 terms: always .scale(0.85)
 L5. Multi-element layout: use Group/VGroup + .arrange(), not manual shift().
 L6. Never draw new content on top of existing -- FadeOut first.
 L7. interpolate_color(BG, CYAN, 0.5) <- CORRECT (both are ManimColor objects)
-    interpolate_color("#0A0A0F", CYAN, 0.5) <- WRONG (string crashes)"""
+    interpolate_color("#0A0A0F", CYAN, 0.5) <- WRONG (string crashes)
+L8. ZONE NAMES (TITLE, MAIN, SIDEBAR, FOOTER, CENTER, etc.) are COORDINATE
+    REFERENCES ONLY — they are NEVER Text() objects or labels in the scene.
+    NEVER write: Text("TITLE", ...) or Text("MAIN", ...) or Text("SIDEBAR", ...)
+    Zone names exist only as .move_to() coordinates in your Python code."""
 
 LAYOUT_RULES_PORTRAIT = """LAYOUT RULES (PORTRAIT 9:16)
 ============
@@ -137,7 +141,11 @@ L6. Multi-element layout: use VGroup + .arrange(DOWN, buff=0.4).
     NEVER use .arrange(RIGHT) for main content -- not enough width.
 L7. Never draw new content on top of existing -- FadeOut first.
 L8. interpolate_color(BG, CYAN, 0.5) <- CORRECT (both are ManimColor objects)
-    interpolate_color("#0A0A0F", CYAN, 0.5) <- WRONG (string crashes)"""
+    interpolate_color("#0A0A0F", CYAN, 0.5) <- WRONG (string crashes)
+L9. ZONE NAMES (TITLE, MAIN, SIDEBAR, FOOTER, CENTER, etc.) are COORDINATE
+    REFERENCES ONLY — they are NEVER Text() objects or labels in the scene.
+    NEVER write: Text("TITLE", ...) or Text("MAIN", ...) or Text("SIDEBAR", ...)
+    Zone names exist only as .move_to() coordinates in your Python code."""
 
 # ── Fallback: guaranteed-runnable cinematic title card ────────────────────────
 def _fallback_scene(class_name: str, scene: Scene) -> str:

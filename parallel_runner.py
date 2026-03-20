@@ -363,10 +363,6 @@ def run_generation_render_pipeline(
             )
 
             # ── Critic reroute ────────────────────────────────────────────────
-            # Reroute: Critic saw the peak-density frame and decided the scene
-            # needs structural re-planning, not just positional patching.
-            # We call VisualDirector.reroute_scene() with the frame — it decides
-            # PATH A (revise layout) or PATH B (split into beats) freely.
             if (critic_result and critic_result.status == "reroute"
                     and critic_result.reroute_frame is not None):
                 reroute_attempts = getattr(scene, "critic_reroute_attempts", 0) or 0
@@ -407,6 +403,50 @@ def run_generation_render_pipeline(
                     continue   # don't mark_done — new render is pending
                 except Exception as e:
                     log(f"Renderer-{wid}: Scene {scene.id} — reroute failed ({e}), "
+                        f"keeping original clip")
+                    mark_done(scene, clip_path)
+                    continue
+
+            # ── Critic split_needed ───────────────────────────────────────────
+            # Reroute budget exhausted — force PATH B split via VisualDirector.
+            # VisualDirector.reroute_scene(force_split=True) only decides HOW
+            # to split; the Critic already decided THAT it must split.
+            if (critic_result and critic_result.status == "split_needed"
+                    and critic_result.reroute_frame is not None):
+                log(
+                    f"Renderer-{wid}: Scene {scene.id} — split_needed: "
+                    f"forcing PATH B via VisualDirector"
+                )
+                try:
+                    import dataclasses
+                    aspect = getattr(
+                        RESOLUTIONS.get(state.resolution, RESOLUTIONS["1080p"]),
+                        "aspect_ratio", "16:9"
+                    )
+                    updated = director.reroute_scene(
+                        scene, critic_result.reroute_frame,
+                        aspect=aspect, force_split=True
+                    )
+                    reroute_beats = getattr(updated, "_reroute_beats", None)
+                    if reroute_beats:
+                        log(f"Renderer-{wid}: Scene {scene.id} — forced split: "
+                            f"expanding into {len(reroute_beats)} subscenes")
+                        expanded = director._expand_subscenes(
+                            [updated], [(updated.id, reroute_beats)]
+                        )
+                        for sub in expanded:
+                            code_queue.put(SceneTask(scene=sub, attempt=0))
+                        with done_lock:
+                            total_scenes[0] += len(expanded) - 1
+                        continue   # don't mark_done — subscenes pending
+                    else:
+                        # VisualDirector failed to produce beats — keep original
+                        log(f"Renderer-{wid}: Scene {scene.id} — forced split "
+                            f"produced no beats, keeping original clip")
+                        mark_done(scene, clip_path)
+                        continue
+                except Exception as e:
+                    log(f"Renderer-{wid}: Scene {scene.id} — forced split failed ({e}), "
                         f"keeping original clip")
                     mark_done(scene, clip_path)
                     continue

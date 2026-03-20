@@ -157,7 +157,13 @@ Rules:
 2. Apply each correction as a targeted change — do not refactor unrelated code.
 3. Ensure no two elements share the same Manim coordinate center.
 4. If an element is in a VGroup, adjust the VGroup position, not the child.
-5. Return ONLY the complete corrected Python code — no explanations, no fences.
+5. ZONE NAMES (TITLE, MAIN, SIDEBAR, FOOTER, CENTER, etc.) are coordinate
+   references ONLY. Never create Text("TITLE"), Text("MAIN"), Text("SIDEBAR")
+   or any other zone name as a visible Manim object.
+6. Return ONLY the complete corrected Python code — no explanations, no
+   comments about what you changed, no preamble, no markdown fences.
+   The very first character of your response must be the first character
+   of the Python file (typically 'f', 'i', 'c', or '#').
 """
 
 PATCHER_USER_TMPL = """\
@@ -317,15 +323,17 @@ class VLMCritic(BaseAgent):
             )
 
         if split_recommended and reroute_attempts >= MAX_REROUTE_ATTEMPTS:
-            # Budget exhausted — flag for orchestrator-level split
+            # Budget exhausted — pass peak frame so orchestrator can force PATH B split
+            peak_frame = frames[-1] if frames else None
             self._log(
                 f"Scene {scene.id}: reroute budget exhausted ({reroute_attempts}/{MAX_REROUTE_ATTEMPTS}) "
                 f"— flagging as split_needed"
             )
             return CriticResult(
-                status = "split_needed",
-                issues = issues,
-                reason = reasoning or "density overflow, reroute budget exhausted",
+                status        = "split_needed",
+                issues        = issues,
+                reason        = reasoning or "density overflow, reroute budget exhausted",
+                reroute_frame = peak_frame,
             )
 
         # ── Guard: no point patching if no actionable issues ─────────────────
@@ -584,10 +592,36 @@ class VLMCritic(BaseAgent):
                 temperature      = 0.2,
                 primary_provider = "claude",
             )
-            # Strip markdown fences if model wraps in ```python
+            # Strip markdown fences
             patched = re.sub(r"^```(?:python)?\s*", "", patched.strip(), flags=re.MULTILINE)
             patched = re.sub(r"```\s*$",             "", patched.strip(), flags=re.MULTILINE)
-            return patched.strip()
+            patched = patched.strip()
+
+            # Strip any leading reasoning/prose lines before the first Python line.
+            # Claude sometimes thinks out loud before the code ("Let me interpret...").
+            # Any line before the first from/import/class/# is prose — remove it.
+            lines = patched.splitlines()
+            code_start = 0
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if (stripped.startswith("from ")
+                        or stripped.startswith("import ")
+                        or stripped.startswith("class ")
+                        or stripped.startswith("#")
+                        or stripped == ""):
+                    code_start = i
+                    break
+            patched = "\n".join(lines[code_start:]).strip()
+
+            # Final guard: verify the result is valid Python before returning.
+            # If it fails, log and return None so the original code is kept.
+            try:
+                compile(patched, "<patch>", "exec")
+            except SyntaxError as se:
+                self._log(f"Code patch syntax error after strip ({se}) — discarding patch")
+                return None
+
+            return patched
 
         except Exception as e:
             self._log(f"Code patch error: {e}")

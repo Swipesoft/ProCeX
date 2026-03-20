@@ -26,7 +26,7 @@ from agents.vlm_critic import VLMCritic, CriticResult
 
 
 # Maximum number of regenerate-and-retry cycles per scene before black fallback
-REGEN_RETRIES = 2
+REGEN_RETRIES = 4
 
 
 class RendererAgent(BaseAgent):
