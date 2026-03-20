@@ -378,6 +378,11 @@ def run_generation_render_pipeline(
                             RESOLUTIONS["1080p"]), "aspect_ratio", "16:9"
                         )
                     )
+                    # Grab beats BEFORE dataclasses.replace() — it only copies
+                    # declared dataclass fields, so _reroute_beats (set via
+                    # object.__setattr__) would be silently dropped otherwise.
+                    reroute_beats = getattr(updated, "_reroute_beats", None)
+
                     # Increment reroute counter before re-queuing
                     updated = dataclasses.replace(
                         updated,
@@ -385,12 +390,11 @@ def run_generation_render_pipeline(
                         clip_path = "",   # clear stale clip
                     )
                     # If VisualDirector chose PATH B, expand subscenes first
-                    reroute_beats = getattr(updated, "_reroute_beats", None)
                     if reroute_beats:
                         log(f"Renderer-{wid}: Scene {scene.id} — reroute PATH B: "
                             f"expanding into {len(reroute_beats)} subscenes")
                         expanded = director._expand_subscenes(
-                            [updated], [(updated.id, reroute_beats)]
+                            [updated], [(updated, reroute_beats)]
                         )
                         for sub in expanded:
                             code_queue.put(SceneTask(scene=sub, attempt=0))
@@ -432,7 +436,7 @@ def run_generation_render_pipeline(
                         log(f"Renderer-{wid}: Scene {scene.id} — forced split: "
                             f"expanding into {len(reroute_beats)} subscenes")
                         expanded = director._expand_subscenes(
-                            [updated], [(updated.id, reroute_beats)]
+                            [updated], [(updated, reroute_beats)]
                         )
                         for sub in expanded:
                             code_queue.put(SceneTask(scene=sub, attempt=0))
