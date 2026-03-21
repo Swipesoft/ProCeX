@@ -37,6 +37,7 @@ class ProcExOrchestrator:
         resolution: str = "1080p",
         target_minutes: float = 5.0,
         resume_checkpoint: str | None = None,
+        presentation_style: str = "auto",
     ) -> str:
         start_time = time.time()
 
@@ -45,7 +46,7 @@ class ProcExOrchestrator:
             print(f"[ProcEx] Resuming from checkpoint: {resume_checkpoint}")
             state = ProcExState.load_checkpoint(resume_checkpoint)
         else:
-            state = self._init_state(input_path, topic_hint, resolution, target_minutes)
+            state = self._init_state(input_path, topic_hint, resolution, target_minutes, presentation_style)
             # Fresh run — purge any stale checkpoint for this topic so no
             # agent is ever silently skipped with outdated decisions.
             self._clear_checkpoint(state)
@@ -174,10 +175,11 @@ class ProcExOrchestrator:
 
     # ── State init ────────────────────────────────────────────────────────────
 
-    def _init_state(self, input_path, topic_hint, resolution, target_minutes):
+    def _init_state(self, input_path, topic_hint, resolution, target_minutes, presentation_style="auto"):
         state = ProcExState(
             resolution              = resolution,
             target_duration_minutes = target_minutes,
+            presentation_style      = presentation_style,
         )
         ext = os.path.splitext(input_path)[-1].lower()
         if ext == ".pdf":

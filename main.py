@@ -71,6 +71,19 @@ Examples:
         help="Root output directory (default: output/)"
     )
 
+    parser.add_argument(
+        "--style", "-s",
+        type=str,
+        default="auto",
+        help=(
+            "Presentation style. Options: "
+            "auto (LLM picks based on topic+duration), "
+            "tiktok-scifi (sci-fi dramatic, <1.5min), "
+            "tiktok-thriller (historical story, <2min), "
+            "youtube-tutorial (deep explainer, 4-10min)"
+        )
+    )
+
     args = parser.parse_args()
 
     # Validate
@@ -88,7 +101,7 @@ Examples:
     from config import ProcExConfig
     from orchestrator import ProcExOrchestrator
 
-    cfg = ProcExConfig(output_root=args.output_dir)
+    cfg = ProcExConfig(output_root=args.output_dir, presentation_style=args.style)
 
     print(f"""
 ╔══════════════════════════════════════════════════════════╗
@@ -98,6 +111,7 @@ Examples:
   Topic:       {args.topic or 'auto-detect'}
   Resolution:  {args.resolution}
   Duration:    {args.minutes} min (target)
+  Style:       {args.style}
   Output dir:  {args.output_dir}/videos/
 """)
 
@@ -124,6 +138,7 @@ Examples:
             resolution          = args.resolution,
             target_minutes      = args.minutes,
             resume_checkpoint   = args.resume,
+            presentation_style  = args.style,
         )
     except KeyboardInterrupt:
         print("\n\n[ProcEx] ⚠ Interrupted by user — saving checkpoint...")

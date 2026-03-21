@@ -37,12 +37,23 @@ class AssemblerAgent(BaseAgent):
         videos_dir = self.cfg.dirs["videos"]
         os.makedirs(videos_dir, exist_ok=True)
 
-        scenes_with_clips = [
-            s for s in state.scenes
-            if s.clip_path
-            and os.path.exists(s.clip_path)
-            and os.path.getsize(s.clip_path) > 0
-        ]
+        def _ancestry_key(scene_id: int):
+            path = []
+            while scene_id >= 100:
+                path.append(scene_id % 100)
+                scene_id = scene_id // 100
+            path.append(scene_id)
+            return tuple(reversed(path))
+
+        scenes_with_clips = sorted(
+            [
+                s for s in state.scenes
+                if s.clip_path
+                and os.path.exists(s.clip_path)
+                and os.path.getsize(s.clip_path) > 0
+            ],
+            key=lambda s: _ancestry_key(s.id)
+        )
 
         if not scenes_with_clips:
             self._err(state, "No clips to assemble")
@@ -55,10 +66,32 @@ class AssemblerAgent(BaseAgent):
         synced_dir  = os.path.join(videos_dir, "synced")
         os.makedirs(synced_dir, exist_ok=True)
 
+        # Check whether per-scene audio files exist.
+        # If a scene's audio file is missing but state.audio_path exists,
+        # reconstruct the path using tts_audio_start offset so legacy mode
+        # is never triggered just because a path string is stale/wrong.
+        for s in scenes_with_clips:
+            if s.tts_audio_path and not os.path.exists(s.tts_audio_path):
+                # Path might be stale from a different working directory.
+                # Try to resolve relative to current dir.
+                candidate = os.path.abspath(s.tts_audio_path)
+                if os.path.exists(candidate):
+                    s.tts_audio_path = candidate
+
         has_per_scene_audio = any(
             s.tts_audio_path and os.path.exists(s.tts_audio_path)
             for s in scenes_with_clips
         )
+
+        # Fallback: if no per-scene audio but we have the full combined audio,
+        # reconstruct per-scene audio refs using tts_audio_start offsets so
+        # we can still do segment-level sync rather than the crude legacy overlay.
+        if not has_per_scene_audio and state.audio_path and os.path.exists(state.audio_path):
+            self._log("Per-scene audio not found — reconstructing from combined audio + offsets")
+            for s in scenes_with_clips:
+                s.tts_audio_path = state.audio_path
+                # tts_audio_start already carries the correct offset (set by TTSAgent)
+            has_per_scene_audio = True
 
         if has_per_scene_audio:
             # ── Segment-level sync ────────────────────────────────────────

@@ -304,24 +304,38 @@ class TTSAgent(BaseAgent):
         return header + pcm_data
 
     def _wav_to_mp3(self, wav_bytes: bytes, output_path: str) -> None:
-        """Convert WAV bytes to MP3 file via ffmpeg pipe."""
-        cmd = [
-            "ffmpeg", "-y",
-            "-f", "wav", "-i", "pipe:0",
-            "-c:a", "libmp3lame", "-q:a", "2",
-            output_path,
-        ]
-        result = subprocess.run(
-            cmd,
-            input           = wav_bytes,
-            capture_output  = True,
-            timeout         = 120,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"WAV→MP3 conversion failed:\n{result.stderr[-500:].decode('utf-8', errors='replace')}"
-            )
+        """
+        Convert WAV bytes to MP3 file via ffmpeg.
+        Tries pipe:0 first (fastest). Falls back to a temp file on Windows
+        where pipe:0 can fail with certain ffmpeg builds.
+        """
+        import tempfile
 
+        def _try_ffmpeg(extra_input_flags: list, pipe_input=None) -> bool:
+            cmd = ["ffmpeg", "-y", *extra_input_flags, "-c:a", "libmp3lame", "-q:a", "2", output_path]
+            result = subprocess.run(cmd, input=pipe_input, capture_output=True, timeout=120)
+            return result.returncode == 0
+
+        # Try 1: pipe:0 (Unix / modern Windows ffmpeg)
+        if _try_ffmpeg(["-f", "wav", "-i", "pipe:0"], pipe_input=wav_bytes):
+            return
+
+        # Try 2: temp WAV file (Windows pipe fallback)
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp.write(wav_bytes)
+            tmp_path = tmp.name
+        try:
+            if _try_ffmpeg(["-i", tmp_path]):
+                return
+            raise RuntimeError(
+                "WAV to MP3 conversion failed via both pipe and temp file. "
+                "Check ffmpeg installation."
+            )
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
     # ── Shared timestamp builder ──────────────────────────────────────────────
 
     @staticmethod

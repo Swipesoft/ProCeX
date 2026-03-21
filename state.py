@@ -112,7 +112,9 @@ class ProcExState:
 
     # ── Domain classification ───────────────────
     domain:     Domain = Domain.ML_MATH
-    skill_pack: dict   = field(default_factory=dict)
+    skill_pack:  dict   = field(default_factory=dict)
+    style_pack:  dict   = field(default_factory=dict)   # presentation style skill (tiktok-scifi etc.)
+    presentation_style: str = "auto"                    # resolved style id
 
     # ── Script ─────────────────────────────────
     scenes:           list  = field(default_factory=list)   # list[Scene]

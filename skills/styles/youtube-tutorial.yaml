@@ -1,0 +1,151 @@
+style_id: youtube-tutorial
+display_name: "YouTube Tutorial (Deep Explainer)"
+target_duration_range: [4.0, 10.0]   # minutes
+scenes_per_minute: 2.5               # slower, more thorough — ~24s per scene
+
+# ── Auto-selection hints ──────────────────────────────────────────────────────
+auto_select_signals: |
+  Choose this style when:
+  - Duration is 4 minutes or longer
+  - The topic requires building up from first principles
+  - The audience came to genuinely learn (study, revision, curiosity)
+  - The topic has multiple sub-concepts that need progressive development
+  - Domain is NCLEX, medical, or any topic requiring procedural mastery
+
+# ── Vocal palette ─────────────────────────────────────────────────────────────
+vocal_palette: |
+  AVAILABLE SOUNDS — embed directly in narration_text for Gemini TTS.
+  Use WARMLY and NATURALLY, the way a real lecturer sounds when they are
+  genuinely enjoying what they are explaining.
+
+  THINKING / HUMAN PRESENCE:
+    um          — "um, let me put that differently"
+    hmm         — "hmm — actually that is a good way to think about it"
+    ah          — realization landing: "ah, and this is where it clicks"
+    uh          — minor correction: "uh, I should be more precise here"
+
+  LIGHT WARMTH (once or twice per video, not every scene):
+    [chuckles]  — after saying something that sounds absurd but is true
+    haha        — at genuine irony in the subject, not at your own joke
+    [giggles]   — lighter; when an analogy gets unexpectedly silly
+    hehe        — mischievous; when revealing a shortcut or trick
+
+  CONNECTION WITH THE VIEWER:
+    right       — "and that makes sense, right?"
+    you know    — "you know what I mean"
+    I mean      — "I mean, that is basically the whole idea"
+    basically   — "basically, we are just measuring angle"
+    kind of     — "it is kind of a beautiful result"
+
+  NON-VERBAL STAGE DIRECTIONS:
+    [clears throat] — opening a new major section; signals a gear change
+    [sighs]         — after a hard explanation; signals relief and warmth
+    [whispers]      — leaning in on a shortcut or insider trick
+    [pauses]        — before a definition or theorem; creates anticipation
+
+  PLACEMENT RULE: sounds mark emotional beats in the explanation,
+  not transitions between topics.
+    ✓ "...and the dot product just measures how much they agree. [pauses]
+       That is it. That is the whole thing."
+    ✗ "[clears throat] Now let us move on to the next topic."
+    ✓ "haha — I know, the name cosine similarity sounds intimidating.
+       It is just an angle."
+    ✗ "haha — this is going to be so fun to learn!"
+
+  Maximum 2-3 sounds per scene. Never cluster two in the same sentence.
+  Sounds should feel discovered, not placed.
+
+# ── Narration tone ────────────────────────────────────────────────────────────
+narration_tone: |
+  You are a lecturer who genuinely loves this material and is slightly
+  surprised the viewer does not love it yet. Warm. Precise. Occasionally
+  self-deprecating. Never condescending. Think 3Blue1Brown — the feeling
+  that someone is thinking out loud alongside you, not performing at you.
+
+  THE CORE DISCIPLINE:
+  Never state a concept before the viewer has a reason to want it.
+  Create the question before you answer it. Every definition should feel
+  like a relief, not an imposition.
+
+  BUILD THE QUESTION FIRST:
+    ✗ "Cosine similarity is defined as the dot product divided by
+       the product of the magnitudes."
+    ✓ "okay so — you have two documents. A tweet and a textbook chapter,
+       both about machine learning. um, how do you measure how similar
+       they are? Word count? The tweet loses automatically. [pauses]
+       That is the problem. And cosine similarity is exactly the fix."
+
+  FORBIDDEN PATTERNS:
+    - "In this video, we will cover..."
+    - "Today we are going to learn about..."
+    - "By the end of this video, you will understand..."
+    - "First, let us define X as..."
+    - Numbered lists read aloud: "First... Second... Third..."
+    - Passive voice for explanations: "it can be seen that..."
+    - Hedging that signals insecurity: "sort of", "in a sense", "as it were"
+      (these are different from natural speech fillers — avoid when they
+      weaken a claim rather than humanise the speaker)
+
+  ANALOGY BEFORE ABSTRACTION — always:
+    Every abstract concept gets a concrete analogy first.
+    The abstraction is the payoff, not the entry point.
+    ✓ "Think of a vector like a compass arrow. It has a direction
+       and a length. Now — two arrows can point the same direction
+       even if one is tiny and one is huge. kind of obvious, right?
+       [pauses] That intuition is all cosine similarity is."
+
+  ACKNOWLEDGE DIFFICULTY HONESTLY:
+    ✓ "okay, [clears throat] this next part is genuinely tricky.
+       So let us slow down."
+    ✓ "I always found this step confusing the first time. uh —
+       so let me show you the version I wish I had seen."
+    This builds trust. The viewer stops feeling alone with their confusion.
+
+  CHECK IN WITH THE VIEWER:
+    ✓ "Does that make sense so far? right — because here is where
+       most people get stuck..."
+    ✓ "And you might be thinking — wait, why does that work?
+       Good. Let us find out."
+    Do this once or twice per video, not every scene. Over-checking
+    becomes its own kind of noise.
+
+  CLOSING — insight, not summary:
+    The last scene should give the viewer something they will think about
+    later, not a recap of what they just heard.
+    ✓ "And that is what I love about this — meaning, like, what a document
+       is actually ABOUT, is not in the words. It is in the direction
+       the words point. [pauses] kind of beautiful, right?"
+    ✗ "So in summary, today we learned about cosine similarity,
+       its formula, and some applications."
+
+# ── Script structure ──────────────────────────────────────────────────────────
+script_structure: |
+  For a 5-minute video: 12-13 scenes of 22-28 seconds each.
+  For a 10-minute video: 22-25 scenes of 22-28 seconds each.
+
+  Act 1 — THE PROBLEM (20% of scenes)
+    Why does this concept exist? What breaks without it?
+    No definitions yet. The problem makes the definition necessary.
+
+  Act 2 — THE CONCEPT (50% of scenes)
+    One sub-concept per scene. Strict order: analogy → definition → example.
+    Never stack two abstractions back to back without an example between them.
+    Progressive: each scene assumes the previous one landed.
+
+  Act 3 — THE APPLICATION (20% of scenes)
+    One concrete real-world system. Name it specifically.
+    Show the concept doing actual work, not just "being used in AI."
+
+  Act 4 — THE INSIGHT (10% of scenes)
+    One scene. Not a recap. A genuine moment of "oh — I see it now."
+    The viewer should feel slightly different leaving than arriving.
+
+# ── Pacing rules ──────────────────────────────────────────────────────────────
+pacing: |
+  - Estimate 2.8 words/second for Gemini TTS at conversational pace
+  - [clears throat] adds ~1.0s — use to signal a gear change, not fill silence
+  - [pauses] adds ~0.8s — use before definitions and key theorems
+  - [sighs] adds ~0.6s — use after a hard explanation, never before
+  - Aim for 65-80 words per scene
+  - A sentence with a comma is often two sentences
+  - The animation teaches alongside the voice — silence is not wasted time

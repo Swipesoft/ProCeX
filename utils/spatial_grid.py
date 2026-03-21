@@ -119,21 +119,80 @@ def get_zones(aspect: str = "16:9") -> dict:
     return _build_zones(aspect)
 
 
+def _grid_cell_to_manim(ref: str, aspect: str = "16:9") -> tuple[float, float] | None:
+    """
+    Parse a raw grid cell reference like '(1,5)' or '1,5' into a Manim (x,y)
+    coordinate. Returns None if the string doesn't match the pattern.
+    Gemini often returns grid coordinates instead of zone names because the
+    frame overlay only labels 5 landmark zones; this handles that gracefully.
+    """
+    import re
+    m = re.match(r"[\(\[]?\s*(\d+)\s*[,;]\s*(\d+)\s*[\)\]]?", ref.strip())
+    if not m:
+        return None
+    row, col = int(m.group(1)), int(m.group(2))
+
+    g       = _geometry(aspect)
+    fw, fh  = g["frame_w"], g["frame_h"]
+    cw, ch  = fw / GRID_COLS, fh / GRID_ROWS
+
+    # Clamp to valid grid range (0..GRID_ROWS-1, 0..GRID_COLS-1)
+    row = max(0, min(row, GRID_ROWS - 1))
+    col = max(0, min(col, GRID_COLS - 1))
+
+    # Cell centre in Manim coordinates
+    x = round(-(fw / 2) + (col + 0.5) * cw, 2)
+    y = round( (fh / 2) - (row + 0.5) * ch, 2)
+
+    # Clamp to safe zone (avoid edges where Manim clips content)
+    safe_x = fw / 2 - cw * 0.6   # ~half a cell margin from edge
+    safe_y = fh / 2 - ch * 0.6
+    x = max(-safe_x, min(x, safe_x))
+    y = max(-safe_y, min(y, safe_y))
+    return x, y
+
+
 def zone_to_manim_position(zone_name: str, aspect: str = "16:9") -> str:
+    """
+    Resolve a zone name OR a raw grid coordinate like '(1,5)' to a Manim
+    .move_to() call. Falls back to grid-cell math if the zone name is not
+    in the named-zone registry — which happens when Gemini returns raw cell
+    references from the frame overlay instead of zone names.
+    """
+    # Try named zone first
     zone = get_zones(aspect).get(zone_name)
-    if not zone:
-        return ".move_to(ORIGIN)"
-    x, y = zone.manim_center
-    return f".move_to(np.array([{x}, {y}, 0]))"
+    if zone:
+        x, y = zone.manim_center
+        return f".move_to(np.array([{x}, {y}, 0]))"
+
+    # Try to parse as a raw grid cell reference e.g. "(1,5)"
+    coords = _grid_cell_to_manim(zone_name, aspect)
+    if coords:
+        x, y = coords
+        return f".move_to(np.array([{x}, {y}, 0]))"
+
+    # True fallback — zone name unrecognised and not a grid ref
+    # Use MAIN zone centre rather than ORIGIN to avoid centre pile-up
+    main = get_zones(aspect).get("MAIN")
+    if main:
+        x, y = main.manim_center
+        return f".move_to(np.array([{x}, {y}, 0]))"
+    return ".move_to(ORIGIN)"
 
 
 def zone_to_shift_hint(from_zone: str, to_zone: str, aspect: str = "16:9") -> str:
     zones = get_zones(aspect)
     fz, tz = zones.get(from_zone), zones.get(to_zone)
-    if not fz or not tz:
+
+    # Resolve raw grid refs if named zones not found
+    from_coords = fz.manim_center if fz else _grid_cell_to_manim(from_zone, aspect)
+    to_coords   = tz.manim_center if tz else _grid_cell_to_manim(to_zone, aspect)
+    to_desc     = tz.description  if tz else f"grid cell {to_zone}"
+
+    if not from_coords or not to_coords:
         return f"Move element to zone {to_zone}"
-    return (f"Move the element from {from_zone} center {fz.manim_center} "
-            f"to {to_zone} center {tz.manim_center} ({tz.description})")
+    return (f"Move the element from {from_zone} center {from_coords} "
+            f"to {to_zone} center {to_coords} ({to_desc})")
 
 
 def zone_at_pixel(px: int, py: int, aspect: str = "16:9") -> Zone:
@@ -213,3 +272,4 @@ def draw_grid_overlay(image_bytes: bytes, aspect: str = "16:9", alpha: int = 140
     buf = io.BytesIO()
     composited.save(buf, format="PNG", optimize=False)
     return buf.getvalue()
+

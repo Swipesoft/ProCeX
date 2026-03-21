@@ -226,6 +226,7 @@ def run_generation_render_pipeline(
     render_queue = Queue()   # SceneTask → renderer workers
     results      = {}        # scene.id → clip_path  (written once per scene)
     done_count   = [0]
+    done_scenes  = {}       # id → Scene, tracks ALL scenes including reroute subscenes
     done_lock    = threading.Lock()
 
     def log(msg: str):
@@ -236,6 +237,7 @@ def run_generation_render_pipeline(
         if clip_path:
             scene.clip_path    = clip_path
             results[scene.id]  = clip_path
+            done_scenes[scene.id] = scene   # ← store object for state rebuild
         else:
             state.log_error("RendererAgent", f"Scene {scene.id}: all fallbacks failed")
         with done_lock:
@@ -564,12 +566,41 @@ def run_generation_render_pipeline(
     for t in threads:
         t.join(timeout=10)
 
-    # ── Write results back to state ───────────────────────────────────────
-    state.rendered_clips = []
-    for scene in state.scenes:
-        if scene.id in results:
-            scene.clip_path = results[scene.id]
-            state.rendered_clips.append(results[scene.id])
+    # ── Write results back to state ─────────────────────────────────────────
+    # Rebuild state.scenes from done_scenes to include all reroute/split
+    # subscenes that were created at runtime and never added to state.scenes.
+    # Sort by id so scenes play in correct order. Original scenes without
+    # clips (rerouted parents) are excluded — their subscenes replace them.
+    if done_scenes:
+        def _ancestry_key(scene_id: int):
+            """
+            Decode a scene id into its ancestral path tuple so scenes sort in
+            narrative order regardless of numeric magnitude.
+            id=4     → (4,)       id=302   → (3, 2)
+            id=30101 → (3, 1, 1)  id=30102 → (3, 1, 2)
+            Plain numeric sort puts 4 before 302 before 30101 — wrong.
+            Ancestry sort puts them as (3,1,1), (3,1,2), (3,2), (4,) — correct.
+            """
+            path = []
+            while scene_id >= 100:
+                path.append(scene_id % 100)
+                scene_id = scene_id // 100
+            path.append(scene_id)
+            return tuple(reversed(path))
+
+        all_done = sorted(done_scenes.values(), key=lambda s: _ancestry_key(s.id))
+        # Only keep scenes that have a clip — discard rerouted parents
+        state.scenes = [s for s in all_done if s.clip_path]
+        # Also include original scenes that weren't rerouted but somehow
+        # missed done_scenes (edge case: fallback with no clip_path)
+        done_ids = {s.id for s in state.scenes}
+        for s in sorted(
+            (orig for orig in state.scenes if orig.id not in done_ids),
+            key=lambda s: s.id
+        ):
+            pass  # already filtered above
+
+    state.rendered_clips = [s.clip_path for s in state.scenes if s.clip_path]
 
     elapsed = time.time() - start
     log(

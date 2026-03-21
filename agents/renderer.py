@@ -157,6 +157,12 @@ class RendererAgent(BaseAgent):
                 f"Scene {scene.id}: Critic patched {len(result.issues)} "
                 f"collision(s) — re-rendering..."
             )
+            # Purge stale Manim media output before re-rendering.
+            # On Windows, Manim's caching can return the old clip even with
+            # --disable_caching if the class name and output path are unchanged.
+            # Deleting the previous output forces a clean render of the patched code.
+            self._purge_manim_cache(scene, resolution)
+
             new_clip, new_err = self.render_scene_once(scene, resolution, out_dir)
             if new_err:
                 self._log(
@@ -315,6 +321,27 @@ class RendererAgent(BaseAgent):
 
         return None
 
+    def _purge_manim_cache(self, scene: Scene, resolution: str) -> None:
+        """
+        Delete the stale Manim media output for this scene before a patch
+        re-render. On Windows, Manim ignores --disable_caching when the class
+        name and output path are unchanged — it returns the old clip silently.
+        Deleting the previous output forces a genuine re-execution.
+        """
+        from config import RESOLUTIONS
+        res          = RESOLUTIONS.get(resolution, RESOLUTIONS["1080p"])
+        manim_media  = os.path.join(self.cfg.dirs["manim"], "media")
+        manim_media_abs = os.path.abspath(manim_media)
+        class_name   = scene.manim_class_name
+
+        stale = self._find_manim_output(manim_media_abs, class_name, res.manim_flag)
+        if stale and os.path.exists(stale):
+            try:
+                os.remove(stale)
+                self._log(f"Scene {scene.id}: purged stale Manim cache → {stale}")
+            except Exception as e:
+                self._log(f"Scene {scene.id}: could not purge cache ({e}) — proceeding anyway")
+
     # ── Ken Burns ─────────────────────────────────────────────────────────────
 
     def _render_ken_burns(self, scene: Scene, resolution: str, out_dir: str) -> str:
@@ -411,11 +438,40 @@ class RendererAgent(BaseAgent):
     def _render_emergency_fallback(
         self, scene: Scene, resolution: str, out_dir: str
     ) -> str:
-        """Plain dark colour clip — no drawtext to avoid Windows font issues."""
-        res      = RESOLUTIONS[resolution]
-        dest     = os.path.join(out_dir, f"scene_{scene.id:02d}.mp4")
-        duration = max(5.0, scene.duration_seconds)
+        """
+        Last-resort fallback when all Manim render attempts are exhausted.
+        Uses ManimCoder's guaranteed-runnable title card (dark cinematic slide
+        with scene narration excerpt) rather than a plain black screen.
+        Falls back to an ffmpeg colour clip only if even that fails.
+        """
+        from agents.manim_coder import ManimCoder, _fallback_scene
+        res  = RESOLUTIONS[resolution]
+        dest = os.path.join(out_dir, f"scene_{scene.id:02d}.mp4")
 
+        # Try Manim title card first
+        try:
+            class_name            = getattr(scene, "manim_class_name", f"Scene{scene.id:02d}")
+            scene.manim_class_name = class_name
+            fallback_code = _fallback_scene(class_name, scene)
+            # Write to a dedicated fallback file so it doesn't clobber the broken code
+            fb_path = os.path.join(
+                self.cfg.dirs["manim"], f"scene_{scene.id:02d}_fallback.py"
+            )
+            coder = ManimCoder(self.cfg, None)
+            coder._write_scene_file(fb_path, fallback_code, res=res)
+
+            # Render the fallback file
+            old_path = scene.manim_file_path
+            scene.manim_file_path = fb_path
+            clip = self._render_manim(scene, resolution, out_dir)
+            scene.manim_file_path = old_path
+            self._log(f"Scene {scene.id}: emergency fallback rendered via Manim title card")
+            return clip
+        except Exception as e:
+            self._log(f"Scene {scene.id}: Manim fallback failed ({e}) — using ffmpeg colour clip")
+
+        # True last resort: plain dark colour clip
+        duration = max(5.0, scene.duration_seconds)
         cmd = [
             "ffmpeg", "-y",
             "-f", "lavfi",
@@ -430,5 +486,4 @@ class RendererAgent(BaseAgent):
         )
         if result.returncode != 0:
             raise RuntimeError(f"Emergency fallback failed: {result.stderr[-500:]}")
-
         return dest

@@ -1,0 +1,108 @@
+style_id: tiktok-scifi
+display_name: "TikTok Sci-Fi One-Minute"
+target_duration_range: [0.75, 1.5]   # minutes
+scenes_per_minute: 4.0               # fast cuts — ~15s per scene
+
+# ── Auto-selection hints ──────────────────────────────────────────────────────
+auto_select_signals: |
+  Choose this style when:
+  - The topic is a mathematical concept, algorithm, or scientific principle
+  - Duration is under 1.5 minutes
+  - The topic sounds cool / futuristic (AI, quantum, vectors, neural nets)
+  - The audience is young, tech-savvy, scroll-first
+
+# ── Vocal palette ─────────────────────────────────────────────────────────────
+# [whispers] — the last line of a scene; the thing the viewer takes away
+vocal_palette: |
+  AVAILABLE SOUNDS — embed directly in narration_text for Gemini TTS:
+    [pauses]   — silence before a contradiction or reveal
+    
+    ugh        — dismissing the naive/old way, not announcing frustration
+    huh        — after stating something counter-intuitive, not before it
+    oh         — realization that lands mid-thought, not as an opener
+    You see       — mid-sentence pivot; catching the viewer's own assumption
+
+  PLACEMENT RULE: vocal sounds react to content — they never introduce it.
+    ✓ "It learned your face from an 1847 footnote. [pauses] Nobody planned that."
+    ✗ "whoa — okay so here is something wild."
+    ✓ "He thought it was a neat trick. ugh. It became the backbone of GPT-4."
+    ✗ "ugh — the old methods are so boring."
+
+  Maximum one vocal sound per scene. Never open a scene with one.
+
+# ── Narration tone ────────────────────────────────────────────────────────────
+narration_tone: |
+  You are a documentary narrator who trusts the facts to be dramatic enough.
+  You never announce that something is surprising — you state the thing
+  and let the viewer feel the surprise themselves.
+
+  THE CORE DISCIPLINE:
+  Do not describe the drama. Create it through specificity and contrast.
+
+  CONTRAST is your primary tool:
+    old thing vs new thing
+    expected vs actual
+    scale of origin vs scale of impact
+    the person vs what they could not have known
+
+    ✓ "Cauchy wrote this down in 1847. He had no computer.
+       [pauses] It now runs inside two billion smartphones."
+    ✗ "This algorithm is incredibly powerful and widely used today."
+
+  SPECIFICITY kills slop:
+    ✓ "0.3 seconds"  not  "very quickly"
+    ✓ "a footnote in an 1847 paper"  not  "a long time ago"
+    ✓ "Google's PageRank, Spotify's recommendations, GPT-4's weights"
+       not  "many modern applications"
+
+  FORBIDDEN OPENERS — never start a scene with these:
+    - whoa / okay so / here's something wild / most people don't know
+    - you might be wondering / in this video / let me explain
+    - have you ever / imagine if / so basically
+    - Any sentence that describes the topic instead of entering it
+
+  HOOK DISCIPLINE — the first sentence must create a contradiction:
+    The viewer needs something to resolve. Give them a fact coupled with a rhetoric question that
+    does not fit together until the rest of the video explains it.
+    ✓ "Your iphone recognised your face in 0.3 seconds. And if you're wondering how this became possible, well
+       It learned so using an algorithm from 1847."
+    ✓ "The most powerful search engine in history measures
+       the angle between words. [pauses] Not the words themselves.
+       But how is this even possible?"
+
+  CLOSING DISCIPLINE — last line must reframe everything before it:
+    Short. Final. No summary. The viewer should sit with it.
+    ✓ "The most powerful learning algorithm on Earth is just
+       a man from 1847 walking downhill. [pauses] Blindfolded."
+    ✗ "So that is gradient descent — a powerful algorithm
+       used in modern machine learning."
+
+# ── Script structure ──────────────────────────────────────────────────────────
+script_structure: |
+  For a 1-minute video: exactly 3-4 scenes.
+
+  Scene 1 (~15s): THE CONTRADICTION
+    State two facts that do not fit together.
+    No setup. No greeting. No preamble. Mid-sentence if needed.
+    The viewer is already in the middle of something.
+
+  Scene 2 (~20s): THE RESOLUTION
+    Explain the mechanism that makes the contradiction make sense.
+    Anchor it to one specific real-world system by name.
+    One date, one person, or one number if available.
+
+  Scene 3 (~15s): THE SCALE
+    Show how small the origin was and how large the impact became.
+    Pure contrast. Let numbers do the work.
+
+  Scene 4 (~10s): THE REFRAME
+    One sentence that changes how the viewer sees everything
+    they just heard. Abrupt stop. No outro.
+
+# ── Pacing rules ──────────────────────────────────────────────────────────────
+pacing: |
+  - Estimate 2.8 words/second for Gemini TTS at natural pace
+  - [pauses] adds ~0.8s — use before the reframe, not the setup
+  - Never exceed 55 words per scene
+  - Short sentences hit harder than long ones at this pace
+  - If a sentence needs a comma, consider making it two sentences
