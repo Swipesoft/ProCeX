@@ -26,7 +26,7 @@ from agents.vlm_critic import VLMCritic, CriticResult
 
 
 # Maximum number of regenerate-and-retry cycles per scene before black fallback
-REGEN_RETRIES = 4
+REGEN_RETRIES = 2
 
 
 class RendererAgent(BaseAgent):
@@ -266,6 +266,27 @@ class RendererAgent(BaseAgent):
         scene_file_abs   = os.path.abspath(scene.manim_file_path)
         scene_dir        = os.path.dirname(scene_file_abs)
         manim_media_abs  = os.path.abspath(manim_media)
+
+        # For portrait (9:16) resolutions, write a manim.cfg next to the
+        # scene file. --pixel_width/--pixel_height are NOT CLI flags in
+        # Manim Community — they are config-file-only options. frame_width
+        # and frame_height have no CLI flag at all. The cfg file is the
+        # only reliable way to set all four dimensions across all versions.
+        cfg_path = os.path.join(scene_dir, "manim.cfg")
+        if res.is_portrait:
+            cfg_content = (
+                "[CLI]\n"
+                f"pixel_width = {res.width}\n"
+                f"pixel_height = {res.height}\n"
+                f"frame_width = {res.manim_frame_width}\n"
+                f"frame_height = {res.manim_frame_height}\n"
+            )
+            with open(cfg_path, "w", encoding="utf-8") as cfg_f:
+                cfg_f.write(cfg_content)
+        else:
+            # Remove any stale portrait cfg so landscape renders are clean
+            if os.path.exists(cfg_path):
+                os.remove(cfg_path)
 
         cmd = [
             "manim",
