@@ -126,26 +126,48 @@ L8. ZONE NAMES (TITLE, MAIN, SIDEBAR, FOOTER, CENTER, etc.) are COORDINATE
     NEVER write: Text("TITLE", ...) or Text("MAIN", ...) or Text("SIDEBAR", ...)
     Zone names exist only as .move_to() coordinates in your Python code."""
 
-LAYOUT_RULES_PORTRAIT = """LAYOUT RULES (PORTRAIT 9:16)
+LAYOUT_RULES_PORTRAIT = """LAYOUT RULES (PORTRAIT 9:16 — TIKTOK/REELS/SHORTS)
 ============
-L1. Frame: 8 wide x 14 tall. Safe zone: x in [-3.5, 3.5], y in [-6.5, 6.5].
-    THIS IS A TALL NARROW CANVAS -- think phone screen, not widescreen TV.
-L2. Stack content VERTICALLY. Do NOT use side-by-side layouts -- there is no
-    horizontal room. Use VGroup(...).arrange(DOWN) as your primary layout.
-L3. Clear screen between major sections:
+L1. TIKTOK-SAFE CANVAS: x in [-4.0, +1.33], y in [-4.67, +6.67].
+    This is SMALLER than the full frame. Two regions are occupied by TikTok UI:
+      FORBIDDEN RIGHT EDGE  (x > +1.33): TikTok like/comment/share/follow buttons.
+      FORBIDDEN BOTTOM ROW  (y < -4.67): TikTok username, song name, caption bar.
+    NEVER place any Manim object outside the safe canvas bounds above.
+
+L2. VERTICAL STACKING ONLY. No side-by-side layouts — the safe width is only
+    ~5.33 units. Use VGroup(...).arrange(DOWN, buff=0.4) as the primary layout.
+
+L3. TITLE AND TEXT GO AT THE TOP, NOT THE BOTTOM.
+    TikTok places the creator title and caption at the BOTTOM of the screen.
+    Manim text titles must go in the TOP zone (y near +6.0) so they are
+    visible above the TikTok overlay. NEVER put primary text near the bottom.
+
+L4. ANIMATION AND DIAGRAMS: centre the main visual in the upper-middle area
+    (y between +1.0 and +5.0). Keep the lower portion (y < -2.0) sparse --
+    this area sits above the TikTok caption bar and should have at most
+    one small label or accent element.
+
+L5. Clear screen between major sections:
       self.play(FadeOut(Group(*self.mobjects)), run_time=0.5)
-L4. Text sizes: titles max 40, body=28, captions=22, never above 48.
-    Wrap ALL Text objects: Text("...", font_size=28, width=6.5)
-L5. MathTex with >2 terms: always .scale(0.75) -- the canvas is narrower.
-L6. Multi-element layout: use VGroup + .arrange(DOWN, buff=0.4).
+
+L6. Text sizes: titles max 40, body=28, captions=22, never above 48.
+    Wrap ALL Text objects: Text("...", font_size=28, width=5.0)
+    width=5.0 (not 6.5) because the safe horizontal span is only ~5.33 units.
+
+L7. MathTex with >2 terms: always .scale(0.75) -- the canvas is narrower.
+
+L8. Multi-element layout: use VGroup + .arrange(DOWN, buff=0.4).
     NEVER use .arrange(RIGHT) for main content -- not enough width.
-L7. Never draw new content on top of existing -- FadeOut first.
-L8. interpolate_color(BG, CYAN, 0.5) <- CORRECT (both are ManimColor objects)
-    interpolate_color("#0A0A0F", CYAN, 0.5) <- WRONG (string crashes)
-L9. ZONE NAMES (TITLE, MAIN, SIDEBAR, FOOTER, CENTER, etc.) are COORDINATE
-    REFERENCES ONLY — they are NEVER Text() objects or labels in the scene.
-    NEVER write: Text("TITLE", ...) or Text("MAIN", ...) or Text("SIDEBAR", ...)
-    Zone names exist only as .move_to() coordinates in your Python code."""
+
+L9. Never draw new content on top of existing -- FadeOut first.
+
+L10. interpolate_color(BG, CYAN, 0.5) <- CORRECT (both are ManimColor objects)
+     interpolate_color("#0A0A0F", CYAN, 0.5) <- WRONG (string crashes)
+
+L11. ZONE NAMES (TITLE, MAIN, UPPER_MAIN, etc.) are COORDINATE REFERENCES ONLY.
+     NEVER write: Text("TITLE") or Text("MAIN") as visible Manim objects.
+     TIKTOK_BUTTONS and TIKTOK_TITLE zones exist only to mark forbidden regions --
+     never place any content in them."""
 
 # ── Fallback: guaranteed-runnable cinematic title card ────────────────────────
 def _fallback_scene(class_name: str, scene: Scene) -> str:
@@ -177,6 +199,7 @@ def _build_coder_prompt(
     skill: dict,
     error_context: str = "",
     aspect: str = "16:9",
+    style_pack: dict | None = None,
 ) -> str:
     """
     Build the ManimCoder prompt using anchor-driven timing.
@@ -191,6 +214,19 @@ def _build_coder_prompt(
     """
     manim_elements  = skill.get("manim_elements", [])
     domain_decoder  = skill.get("notation_decoder", "")
+
+    # ── TikTok safe zone block (portrait only, from style skill) ──────────────
+    tiktok_safe_zone_section = ""
+    if aspect == "9:16" and style_pack:
+        safe_zones = style_pack.get("tiktok_safe_zones", "")
+        if safe_zones:
+            tiktok_safe_zone_section = (
+                "\n╔══════════════════════════════════════════════════════════════╗\n"
+                "║          TIKTOK SAFE ZONE CONSTRAINTS — HARD RULES           ║\n"
+                "╚══════════════════════════════════════════════════════════════╝\n"
+                + safe_zones.strip()
+                + "\n"
+            )
 
     # ── Build binding zone contract ───────────────────────────────────────────
     zone_contract_section = ""
@@ -281,7 +317,7 @@ VISUAL BRIEF (what to animate):
 {scene.visual_prompt}
 
 {zone_contract_section}
-{anchor_block}
+{tiktok_safe_zone_section}{anchor_block}
 {domain_decoder_section}
 {layout_rules}
 
@@ -325,6 +361,8 @@ class ManimCoder(BaseAgent):
             scene_file             = os.path.join(manim_dir, f"scene_{scene.id:02d}.py")
             scene.manim_file_path  = scene_file
 
+            # Attach style_pack to scene so _generate_scene_code can pass it to the prompt
+            scene._style_pack = getattr(state, "style_pack", {})
             code = self._generate_scene_code(scene, state.skill_pack, res=res, aspect=aspect)
             self._write_scene_file(scene_file, code, res=res)
             self._log(f"Scene {scene.id} -> {scene_file}")
@@ -376,6 +414,7 @@ class ManimCoder(BaseAgent):
                     _build_coder_prompt(scene, skill,
                                         error_context=last_error,
                                         aspect=aspect,
+                                        style_pack=getattr(scene, "_style_pack", None),
 ),
                     json_mode=False,
                     max_tokens=16384,

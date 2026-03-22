@@ -26,7 +26,7 @@ from agents.vlm_critic import VLMCritic, CriticResult
 
 
 # Maximum number of regenerate-and-retry cycles per scene before black fallback
-REGEN_RETRIES = 2
+REGEN_RETRIES = 4
 
 
 class RendererAgent(BaseAgent):
@@ -284,9 +284,13 @@ class RendererAgent(BaseAgent):
             with open(cfg_path, "w", encoding="utf-8") as cfg_f:
                 cfg_f.write(cfg_content)
         else:
-            # Remove any stale portrait cfg so landscape renders are clean
-            if os.path.exists(cfg_path):
+            # Remove any stale portrait cfg so landscape renders are clean.
+            # Use try/except instead of exists()+remove() — the two-step
+            # is not atomic and parallel workers can race on the delete.
+            try:
                 os.remove(cfg_path)
+            except FileNotFoundError:
+                pass  # already deleted by another worker — fine
 
         cmd = [
             "manim",

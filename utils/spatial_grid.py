@@ -9,10 +9,15 @@ Landscape 16:9:
   Manim canvas: 14 wide x 8 tall (x: -7->+7, y: -4->+4)
   Natural layout: TITLE + MAIN + SIDEBAR (horizontal flow)
 
-Portrait 9:16:
+Portrait 9:16 (TikTok/Reels/Shorts):
   Manim canvas: 8 wide x 14 tall (x: -4->+4, y: -7->+7)
-  Natural layout: TITLE + UPPER_MAIN + LOWER_MAIN + FOOTER (vertical stack)
-  SIDEBAR is excluded — too narrow in portrait mode.
+  TikTok-safe canvas: cols 0-3 (x: -4->+1.33), rows 0-4 (y: -4.67->+7)
+
+  FORBIDDEN ZONES (TikTok UI overlays — never place content here):
+    TIKTOK_BUTTONS: right edge (cols 4-5) — like/comment/share/follow buttons
+    TIKTOK_TITLE:   bottom row (row 5)    — username, song, caption bar
+
+  Safe layout: TITLE (top) + UPPER_MAIN + LOWER_MAIN (vertical stack, left of buttons)
 """
 
 from __future__ import annotations
@@ -74,20 +79,34 @@ def _build_zones(aspect: str) -> dict:
                     pixel_bbox=bb(r0,r1,c0,c1))
 
     if aspect == "9:16":
+        # ── TikTok-aware portrait zones ──────────────────────────────────────
+        # TikTok UI overlays occupy two regions that must NEVER contain content:
+        #
+        #   TIKTOK_BUTTONS (cols 4-5, rows 1-4):
+        #     Like, comment, share, follow buttons on the right edge.
+        #     Approx x > +2.67 in Manim units. Keep ALL content in cols 0-3.
+        #
+        #   TIKTOK_TITLE (row 5, cols 0-3):
+        #     Username, song title, and caption text at the bottom-left.
+        #     Approx y < -4.67 in Manim units. Keep ALL content in rows 0-4.
+        #
+        # Safe canvas: cols 0-3 (x ∈ [-4, +1.33]), rows 0-4 (y ∈ [-4.67, +7])
+        # All content zones below are capped to this safe region.
         zones = [
-            z("TITLE",       "Top banner — scene title or chapter heading",                  0,0,0,5),
-            z("SUBTITLE",    "Second row — subtitle, tagline, or equation header",           1,1,0,5),
-            z("FOOTER",      "Bottom banner — exam tip, recap line, or citation",            5,5,0,5),
-            z("MAIN",        "Primary content — full-width central area (rows 2-3)",         2,3,0,5),
-            z("UPPER_MAIN",  "Upper content area — first element in vertical stack",         1,2,0,5),
-            z("LOWER_MAIN",  "Lower content area — second element or answer reveal",         3,4,0,5),
-            z("UPPER_HALF",  "Top half — first panel in 2-panel vertical split",            0,2,0,5),
-            z("LOWER_HALF",  "Bottom half — second panel in 2-panel vertical split",        3,5,0,5),
-            z("UPPER_LEFT",  "Upper-left quadrant — first panel in 2x2 layout",            1,2,0,2),
-            z("UPPER_RIGHT", "Upper-right quadrant — second panel in 2x2 layout",          1,2,3,5),
-            z("LOWER_LEFT",  "Lower-left quadrant — third panel in 2x2 layout",            3,4,0,2),
-            z("LOWER_RIGHT", "Lower-right quadrant — fourth panel in 2x2 layout",          3,4,3,5),
-            z("CENTER",      "Absolute canvas centre — isolated focus element",              2,3,1,4),
+            # ── Content zones (all within TikTok-safe bounds) ─────────────────
+            z("TITLE",       "Top banner — title/hook text, safe from TikTok overlays",      0,0,0,3),
+            z("SUBTITLE",    "Second row — subtitle or equation header",                      1,1,0,3),
+            z("MAIN",        "Primary content area — central animation zone",                 1,3,0,3),
+            z("UPPER_MAIN",  "Upper animation area — first beat in vertical stack",           1,2,0,3),
+            z("LOWER_MAIN",  "Lower animation area — second beat, above TikTok title bar",   3,4,0,3),
+            z("CENTER",      "Canvas centre within safe zone",                                2,3,1,3),
+            z("UPPER_LEFT",  "Upper-left quadrant",                                           1,2,0,1),
+            z("UPPER_RIGHT", "Upper-right quadrant (safe — stays left of TikTok buttons)",   1,2,2,3),
+            z("LOWER_LEFT",  "Lower-left quadrant",                                           3,4,0,1),
+            z("LOWER_RIGHT", "Lower-right quadrant (safe — stays left of TikTok buttons)",   3,4,2,3),
+            # ── Forbidden zones — marker only, never place content here ───────
+            z("TIKTOK_BUTTONS", "FORBIDDEN — TikTok like/share/follow buttons (right edge)", 1,4,4,5),
+            z("TIKTOK_TITLE",   "FORBIDDEN — TikTok username/caption bar (bottom)",          5,5,0,5),
         ]
     else:
         zones = [
@@ -255,7 +274,7 @@ def draw_grid_overlay(image_bytes: bytes, aspect: str = "16:9", alpha: int = 140
             draw.text((int(c*pcw)+6, int(r*pch)+4), f"({r},{c})",
                       fill=(220,220,220,200), font=fs)
 
-    label_zones = (["TITLE","MAIN","LOWER_MAIN","FOOTER","CENTER"]
+    label_zones = (["TITLE","MAIN","LOWER_MAIN","TIKTOK_BUTTONS","TIKTOK_TITLE"]
                    if aspect == "9:16"
                    else ["TITLE","MAIN","SIDEBAR","FOOTER","CENTER"])
     for zname in label_zones:
@@ -272,4 +291,3 @@ def draw_grid_overlay(image_bytes: bytes, aspect: str = "16:9", alpha: int = 140
     buf = io.BytesIO()
     composited.save(buf, format="PNG", optimize=False)
     return buf.getvalue()
-
