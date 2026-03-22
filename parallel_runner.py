@@ -457,6 +457,49 @@ def run_generation_render_pipeline(
                     mark_done(scene, clip_path)
                     continue
 
+            # ── Critic imagegen_fallback ──────────────────────────────────────
+            # Scene is at split_depth>=1 — further splitting would violate N≤K≤2N.
+            # Convert to IMAGE_GEN and enrich the prompt with chain context so
+            # the image generator knows where this scene fits in the video.
+            if critic_result and critic_result.status == "imagegen_fallback":
+                log(
+                    f"Renderer-{wid}: Scene {scene.id} — depth limit reached, "
+                    f"converting to ImageGen fallback"
+                )
+                try:
+                    from agents.image_reprompter import ImageReprompter
+
+                    # Bug fix 1: clear stale Manim clip_path so the old
+                    # failed render is never assembled into the final video.
+                    scene.clip_path = ""
+
+                    # Bug fix 2: use tts_duration as the authoritative clip
+                    # length for ken-burns so ImageGen clips match audio exactly.
+                    if scene.tts_duration and scene.tts_duration > 0:
+                        scene.duration_seconds = scene.tts_duration
+
+                    # Build deeply enriched prompt via ImageReprompter
+                    reprompter = ImageReprompter(cfg, llm)
+                    scene = reprompter.reprompt(scene, state)
+
+                    scene.visual_strategy = VisualStrategy.IMAGE_GEN
+                    scene.needs_labels    = len(scene.label_list) > 0
+
+                    # Dispatch to image_worker (runs in its own thread)
+                    import threading
+                    t = threading.Thread(
+                        target = image_worker,
+                        args   = (wid, scene),
+                        name   = f"ImageFallback-{scene.id}",
+                    )
+                    t.start()
+                    continue   # renderer_worker moves on; image_worker handles done
+                except Exception as e:
+                    log(f"Renderer-{wid}: Scene {scene.id} — imagegen fallback setup failed ({e}), "
+                        f"keeping original clip")
+                    mark_done(scene, clip_path)
+                    continue
+
             if clip_path:
                 log(f"Renderer-{wid}: Scene {scene.id} ✓")
                 mark_done(scene, clip_path)

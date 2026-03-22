@@ -135,8 +135,15 @@ class ImageGenAgent(BaseAgent):
 
 
     @staticmethod
+    @staticmethod
     def _enrich_prompt(scene: Scene, nano_res: str, aspect_ratio: str = "16:9") -> str:
-        """Enrich the VisualDirector's prompt for NanoBanana."""
+        """
+        Enrich the VisualDirector's prompt for NanoBanana.
+        For portrait (9:16) videos, appends TikTok safe zone constraints so
+        the image generator avoids UI overlay regions. For ImageGen fallback
+        scenes (split_depth >= 1), the chain context is already baked into
+        scene.visual_prompt by the parallel_runner before this is called.
+        """
         base = scene.visual_prompt.strip()
 
         additions = []
@@ -147,6 +154,19 @@ class ImageGenAgent(BaseAgent):
         if scene.needs_labels and "label" not in base.lower():
             label_str = ", ".join(scene.label_list[:8])
             additions.append(f"clearly labeled callouts for: {label_str}")
+
+        # TikTok safe zone — only for portrait renders
+        if aspect_ratio == "9:16":
+            additions.append(
+                "CRITICAL COMPOSITION RULE for TikTok: keep ALL visual content "
+                "in the centre band of the frame. "
+                "Leave the TOP 130px completely empty (TikTok search bar overlay). "
+                "Leave the BOTTOM 200px completely empty (TikTok caption/username bar). "
+                "Leave the RIGHT 120px completely empty (TikTok like/comment/share buttons). "
+                "Place titles and key content in the upper-centre. "
+                "Place diagrams and animations in the middle. "
+                "The lower-centre can have one small accent element only"
+            )
 
         if additions:
             base += ". " + ". ".join(additions) + "."

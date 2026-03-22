@@ -128,19 +128,24 @@ L8. ZONE NAMES (TITLE, MAIN, SIDEBAR, FOOTER, CENTER, etc.) are COORDINATE
 
 LAYOUT_RULES_PORTRAIT = """LAYOUT RULES (PORTRAIT 9:16 — TIKTOK/REELS/SHORTS)
 ============
-L1. TIKTOK-SAFE CANVAS: x in [-4.0, +1.33], y in [-4.67, +6.67].
-    This is SMALLER than the full frame. Two regions are occupied by TikTok UI:
-      FORBIDDEN RIGHT EDGE  (x > +1.33): TikTok like/comment/share/follow buttons.
-      FORBIDDEN BOTTOM ROW  (y < -4.67): TikTok username, song name, caption bar.
+L1. TIKTOK-SAFE CANVAS: x in [-3.5, +1.0], y in [-4.67, +5.33].
+    FOUR regions are permanently occupied or unsafe — NEVER place content there:
+      FORBIDDEN LEFT EDGE  (x < -3.5):  Physical screen edge — text clips off screen.
+                                         Always apply a left margin of at least 0.5 units.
+      FORBIDDEN TOP ROW    (y > +5.33): TikTok search bar (~top 130px of screen).
+      FORBIDDEN RIGHT EDGE (x > +1.0):  TikTok like/comment/share/follow buttons.
+      FORBIDDEN BOTTOM ROW (y < -4.67): TikTok username, song name, caption bar.
+    The safe horizontal span is x in [-3.5, +1.0] = 4.5 units total.
+    NEVER anchor text to LEFT edge — always use .move_to() or .to_edge(LEFT, buff=0.5).
     NEVER place any Manim object outside the safe canvas bounds above.
 
 L2. VERTICAL STACKING ONLY. No side-by-side layouts — the safe width is only
-    ~5.33 units. Use VGroup(...).arrange(DOWN, buff=0.4) as the primary layout.
+    ~4.5 units (after left + right margins). Use VGroup(...).arrange(DOWN, buff=0.4).
 
-L3. TITLE AND TEXT GO AT THE TOP, NOT THE BOTTOM.
-    TikTok places the creator title and caption at the BOTTOM of the screen.
-    Manim text titles must go in the TOP zone (y near +6.0) so they are
-    visible above the TikTok overlay. NEVER put primary text near the bottom.
+L3. TITLE AND TEXT: place titles at y ≈ +4.5 to +5.0 (TITLE zone, row 1).
+    NEVER use y > +5.33 — that is behind the TikTok search bar.
+    NEVER use y < -4.67 — that is behind the TikTok caption bar.
+    TikTok overlays BOTH the top AND bottom. The safe vertical band is the MIDDLE.
 
 L4. ANIMATION AND DIAGRAMS: centre the main visual in the upper-middle area
     (y between +1.0 and +5.0). Keep the lower portion (y < -2.0) sparse --
@@ -151,8 +156,9 @@ L5. Clear screen between major sections:
       self.play(FadeOut(Group(*self.mobjects)), run_time=0.5)
 
 L6. Text sizes: titles max 40, body=28, captions=22, never above 48.
-    Wrap ALL Text objects: Text("...", font_size=28, width=5.0)
-    width=5.0 (not 6.5) because the safe horizontal span is only ~5.33 units.
+    Wrap ALL Text objects: Text("...", font_size=28, width=4.0)
+    width=4.0 because the safe horizontal span is only ~4.5 units (left + right margins).
+    NEVER use width > 4.5 — text will clip against the physical screen edge.
 
 L7. MathTex with >2 terms: always .scale(0.75) -- the canvas is narrower.
 
@@ -166,8 +172,8 @@ L10. interpolate_color(BG, CYAN, 0.5) <- CORRECT (both are ManimColor objects)
 
 L11. ZONE NAMES (TITLE, MAIN, UPPER_MAIN, etc.) are COORDINATE REFERENCES ONLY.
      NEVER write: Text("TITLE") or Text("MAIN") as visible Manim objects.
-     TIKTOK_BUTTONS and TIKTOK_TITLE zones exist only to mark forbidden regions --
-     never place any content in them."""
+     TIKTOK_SEARCH, TIKTOK_BUTTONS and TIKTOK_TITLE zones mark forbidden regions --
+     never place any content in them. TIKTOK_SEARCH is the top row (y > +5.33)."""
 
 # ── Fallback: guaranteed-runnable cinematic title card ────────────────────────
 def _fallback_scene(class_name: str, scene: Scene) -> str:

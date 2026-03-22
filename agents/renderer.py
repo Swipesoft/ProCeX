@@ -374,9 +374,17 @@ class RendererAgent(BaseAgent):
             raise ValueError(f"Scene {scene.id}: no image paths for IMAGE_GEN")
 
         dest = os.path.join(out_dir, f"scene_{scene.id:02d}.mp4")
+
+        # Use tts_duration as the authoritative clip length for IMAGE_GEN scenes.
+        # duration_seconds is the LLM estimate; tts_duration is the actual audio
+        # length set by TTSAgent. Mismatching these causes the awkward silence /
+        # audio gap issue when ImageGen clips are assembled with Manim clips.
+        tts_dur = getattr(scene, "tts_duration", 0.0) or 0.0
+        clip_duration = tts_dur if tts_dur > 0.5 else scene.duration_seconds
+
         image_to_video_clip(
             image_path  = scene.image_paths[0],
-            duration    = scene.duration_seconds,
+            duration    = clip_duration,
             output_path = dest,
             resolution  = resolution,
             effect      = cycle_effect(scene.id),

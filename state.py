@@ -92,6 +92,7 @@ class Scene:
     # Subscene fields — set when VisualDirector splits a long scene into beats
     parent_scene_id:     Optional[int] = None   # original scene id this was split from
     subscene_index:      int = 0                 # position within parent (0 = not a subscene)
+    split_depth:         int = 0                 # 0=original, 1=child of split; depth>=1 → ImageGen fallback instead of further split
 
     # Critic feedback loop — capped at 2 reroutes per scene
     critic_reroute_attempts: int = 0

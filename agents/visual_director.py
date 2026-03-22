@@ -593,23 +593,46 @@ For PATH B:
                 continue
 
             parent, beat_dicts = split_map[scene.id]
-            total_dur = parent.duration_seconds
+
+            # ── Audio-authoritative duration ──────────────────────────────────
+            # Use tts_duration (actual recorded audio length) as the total to
+            # distribute across beats. duration_seconds is the LLM estimate and
+            # is often longer than the real audio, causing subscene audio offsets
+            # to seek past the end of the file → silence in the final video.
+            #
+            # Rule: sum(beat_dur) MUST equal tts_audio_total, never exceed it.
+            tts_audio_total = float(getattr(parent, "tts_duration", 0.0) or 0.0)
+            total_dur = tts_audio_total if tts_audio_total > 1.0 else parent.duration_seconds
             all_timestamps = list(parent.timestamps)
             ts_count = len(all_timestamps)
 
+            # Calculate raw beat durations from fractions, then clamp:
+            # 1. Apply proportional split based on duration_fraction
+            # 2. Apply 5s visual minimum (lower than 10s to avoid blowing past audio)
+            # 3. If the sum exceeds total_dur, scale ALL beats down proportionally
+            #    so they always fit within the actual recorded audio.
+            n_beats = len(beat_dicts)
+            raw_durs = []
+            for beat in beat_dicts:
+                frac = float(beat.get("duration_fraction", 1.0 / n_beats))
+                raw_durs.append(max(round(total_dur * frac, 2), 5.0))
+
+            # Rescale if sum exceeds real audio (prevents silence at end of last beat)
+            raw_sum = sum(raw_durs)
+            if raw_sum > total_dur + 0.1:
+                scale = total_dur / raw_sum
+                raw_durs = [round(d * scale, 2) for d in raw_durs]
+                # Absorb rounding remainder into last beat
+                remainder = round(total_dur - sum(raw_durs), 2)
+                raw_durs[-1] = round(raw_durs[-1] + remainder, 2)
+
             # cursor tracks position within parent's duration (for timestamp slicing).
             # audio_cursor tracks absolute position in the combined audio file.
-            # They start from the same point but are semantically different:
-            #   cursor       → relative, resets to 0 for each parent
-            #   audio_cursor → absolute, inherits parent.tts_audio_start so nested
-            #                  splits (e.g. 403 → 40301/40302) stay correctly anchored
             cursor = 0.0
             audio_cursor = float(getattr(parent, "tts_audio_start", 0.0))
 
             for i, beat in enumerate(beat_dicts):
-                frac = float(beat.get("duration_fraction", 1.0 / len(beat_dicts)))
-                beat_dur = round(total_dur * frac, 2)
-                beat_dur = max(beat_dur, 10.0)  # minimum 10s per beat
+                beat_dur = raw_durs[i]
 
                 # Slice timestamps proportionally within parent's range
                 ts_start = int(cursor / total_dur * ts_count)
@@ -641,6 +664,7 @@ For PATH B:
                     tts_audio_start=round(audio_cursor, 3),  # absolute offset in combined audio
                     parent_scene_id=parent.id,
                     subscene_index=i + 1,
+                    split_depth=getattr(parent, "split_depth", 0) + 1,
                 )
                 new_scenes.append(sub)
                 self._log(

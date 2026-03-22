@@ -79,7 +79,7 @@ class CriticIssue:
 
 @dataclass
 class CriticResult:
-    status:         str            # "ok" | "patched" | "reroute" | "split_needed"
+    status:         str            # "ok" | "patched" | "reroute" | "split_needed" | "imagegen_fallback"
     issues:         list           = field(default_factory=list)
     patched_code:   Optional[str]  = None
     reason:         str            = ""
@@ -302,6 +302,29 @@ class VLMCritic(BaseAgent):
         # OR split is explicitly recommended, AND budget allows.
         # Patch when: collision is a positional fix (low-medium density).
         # Split (final) when: reroute budget exhausted.
+        # ── Depth gate — N ≤ K ≤ 2N boundary ────────────────────────────────
+        # Scenes at split_depth >= 1 are already children of a split.
+        # Allowing them to split again would break the 2N scene count ceiling
+        # and cause runaway API spend. Instead, flag for ImageGen fallback:
+        # the image generator receives rich context and produces a static frame
+        # that respects the aspect ratio and TikTok safe zones.
+        scene_split_depth = getattr(scene, "split_depth", 0)
+
+        if scene_split_depth >= 1 and (
+            split_recommended or density_int >= REROUTE_DENSITY_THRESHOLD
+        ):
+            peak_frame = frames[-1] if frames else None
+            self._log(
+                f"Scene {scene.id}: split_depth={scene_split_depth} — "
+                f"further splitting blocked (N≤K≤2N). Flagging for ImageGen fallback."
+            )
+            return CriticResult(
+                status        = "imagegen_fallback",
+                issues        = issues,
+                reason        = reasoning or "depth limit reached — ImageGen handles this scene",
+                reroute_frame = peak_frame,
+            )
+
         should_reroute = (
             split_recommended or density_int >= REROUTE_DENSITY_THRESHOLD
         ) and reroute_attempts < MAX_REROUTE_ATTEMPTS

@@ -117,6 +117,59 @@ GENERAL SCRIPT RULES:
 - visual_hint: helps the VisualDirector — be specific about what concepts need visual representation.
 - DO NOT decide visual strategy here — that is the VisualDirector's job.
 - Match target_scenes count as closely as possible.
+
+═══════════════════════════════════════════════════════════
+INTER-SCENE COHERENCE RULES  (the most violated rules — read carefully)
+═══════════════════════════════════════════════════════════
+
+These rules govern how scenes connect to each other. A script where every
+scene reads well in isolation but the whole feels disjointed is a FAILED script.
+
+RULE C1 — NO DUPLICATE NARRATION
+  Every scene must contain UNIQUE content. No sentence, phrase, or idea
+  may appear verbatim or near-verbatim in more than one scene.
+  If you catch yourself repeating a setup from a previous scene, you have
+  written the wrong scene. Delete and rewrite from a new angle.
+
+RULE C2 — EACH SCENE ENDS ON A HOOK FOR THE NEXT
+  The last sentence of every scene (except the last) must create forward
+  momentum — a question, a contradiction, a consequence that the next
+  scene will resolve. The viewer should feel pulled forward, not dropped.
+  ✓ DO:   "...and that proof held for exactly 2,000 years. [pauses]
+           Until one man in 1830 noticed something no one else had."
+  ✗ DON'T: "...Euclid's work was very influential in ancient times."
+            (dead end — the viewer has no reason to keep watching)
+
+RULE C3 — CALLBACK THREADING
+  Later scenes must echo or callback to specific language, images, or
+  ideas from earlier scenes. This creates the feeling of a single
+  continuous story rather than a series of unrelated facts.
+  ✓ DO:   Scene 1 introduces "the fifth postulate". Scene 4 opens with:
+           "That fifth postulate — the one everyone accepted — was wrong."
+  ✗ DON'T: Scene 4 introduces the fifth postulate as if for the first time.
+
+RULE C4 — SENTENCE-LEVEL FLOW WITHIN A SCENE
+  Every sentence within a scene must follow from the previous one.
+  No sentence may introduce a new subject without a bridging clause.
+  ✓ DO:   "He built a closed logical system from five axioms. [pauses]
+           But the king wanted a shortcut. Euclid had an answer for that too."
+  ✗ DON'T: "He built a closed logical system from five axioms. [pauses]
+            King Ptolemy asked for a faster way." (subject switch, no bridge)
+
+RULE C5 — WRITE THE SCRIPT IN ORDER, READ IT BACK AS ONE PIECE
+  Before finalising, mentally read the entire script as one continuous
+  narration. If any transition between scenes feels abrupt, add a bridging
+  phrase at the END of the preceding scene or the START of the next.
+  A bridge can be as short as: "And that changed everything." /
+  "But here is what nobody expected." / "The answer arrived from an
+  unlikely direction."
+
+RULE C6 — EMOTIONAL ARC ACROSS THE WHOLE VIDEO
+  The video must have a single emotional trajectory — curiosity → tension
+  → revelation → awe, or setup → complication → resolution.
+  Map each scene to a position on this arc BEFORE writing it.
+  A scene that breaks the emotional trajectory is the wrong scene.
+═══════════════════════════════════════════════════════════
 """
 
 
@@ -333,6 +386,29 @@ class ScriptWriter(BaseAgent):
                 scene.duration_seconds = max(scaled, tts_estimated, 10.0)
 
         state.full_script_text = " ".join(full_text_parts)
+
+        # ── Duplicate scene detection ─────────────────────────────────────────
+        # The LLM occasionally returns scenes with identical or near-identical
+        # narration. Detect and log these so the user knows the script is bad.
+        seen_hashes = {}
+        duplicates  = []
+        for scene in state.scenes:
+            # Use first 120 chars as fingerprint — catches verbatim copies
+            fingerprint = scene.narration_text[:120].strip().lower()
+            if fingerprint in seen_hashes:
+                duplicates.append((seen_hashes[fingerprint], scene.id))
+                self._log(
+                    f"WARNING: Scene {scene.id} narration is a near-duplicate "
+                    f"of Scene {seen_hashes[fingerprint]} — script quality issue"
+                )
+            else:
+                seen_hashes[fingerprint] = scene.id
+
+        if duplicates:
+            self._log(
+                f"Script has {len(duplicates)} duplicate scene(s) — "
+                f"consider re-running ScriptWriter. Duplicate pairs: {duplicates}"
+            )
 
         total = sum(s.duration_seconds for s in state.scenes)
         self._log(

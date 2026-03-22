@@ -71,6 +71,26 @@ narration_tone: |
        He died before anyone believed him. [pauses]
        Three years later, Einstein proved he was right."
 
+  BRIDGE EVERY SCENE TO THE NEXT:
+    The last sentence of every scene except the final must create a specific
+    forward pull — name what is about to happen without revealing it.
+    The viewer must feel they CANNOT stop watching.
+    ✓ "...and every mathematician alive accepted it. [pauses]
+       Every mathematician, that is, except one."
+    ✗ "...Euclid's work was very influential." (dead end — no pull)
+
+  SENTENCE-LEVEL CAUSALITY — every sentence must follow causally from
+    the previous one. Never switch subjects without a bridging clause.
+    The story must feel like dominoes falling, not facts being recited.
+    ✓ "He published the proof. No one read it. [pauses]
+       So he published it again. This time the king had it burned."
+    ✗ "He published the proof. Gauss had been working on the same problem."
+       (hard subject switch — no bridge between these two facts)
+
+  CALLBACK LANGUAGE — pick 1-2 key phrases from the opening scene and
+    echo them verbatim in the closing scene. This creates the feeling of
+    a single coherent arc, not a list of historical events.
+
 # ── Thriller narrative arc formats ────────────────────────────────────────────
 narrative_arcs: |
   SELECT ONE ARC before writing. Commit to it. State it in scene 1's
@@ -144,53 +164,14 @@ pacing: |
   - The narrator stays calm even when the story is not
   - Resist the urge to add "...and that changed everything" — show it instead
 
-# ── TikTok UI safe zones ──────────────────────────────────────────────────────
 tiktok_safe_zones: |
-  TIKTOK SCREEN LAYOUT (what the viewer actually sees):
-
-  TOP AREA      y > +3.0   → SAFE — use for scene titles and opening hooks
-  MAIN AREA     y: -1.0 to +3.0 → PRIMARY CONTENT ZONE — story visuals
-  FOOTER AREA   y: -1.0 to -3.0 → single key fact, date, or name only
-  CAPTION ZONE  y: -3.0 to -5.5 → AVOID — TikTok creator captions live here
-  BOTTOM BAR    y < -5.5   → DEAD ZONE — TikTok "Your Story / Next" bar
-
-  RIGHT COLUMN  x > +2.8   → DEAD ZONE — TikTok like/share/effects buttons
-
-  ZONE ASSIGNMENTS FOR TIKTOK:
-    TITLE     → top of frame   (.move_to(np.array([0,  5.0, 0])))
-    MAIN      → centre         (.move_to(np.array([0,  1.5, 0])))
-    FOOTER    → above captions (.move_to(np.array([0, -2.0, 0])))
-
-  VisualDirector: never allocate elements to x > 2.8 or y < -3.0
-  ManimCoder: never use .to_edge(DOWN) or .to_corner(DR/DL) — those land
-  in the TikTok caption zone. Use .move_to(np.array([x, y, 0])) with
-  y values from the table above.
-
-# ── TikTok UI overlay awareness ───────────────────────────────────────────────
-# When rendering for TikTok/Reels/Shorts (portrait 9:16), the phone screen
-# has permanent UI overlays that compete with animation content:
-#
-#   RIGHT EDGE (x > +1.33 Manim units):
-#     Like, comment, share, follow, and audio buttons stacked vertically.
-#     Any animation element placed here will be hidden behind TikTok UI.
-#
-#   BOTTOM ROW (y < -4.67 Manim units):
-#     Creator username, song/audio name, and caption text.
-#     This area is occupied by TikTok's own title system.
-#
-# VISUAL DIRECTOR must:
-#   - Allocate zone_allocation entries ONLY to: TITLE, UPPER_MAIN, LOWER_MAIN,
-#     CENTER, UPPER_LEFT, UPPER_RIGHT, LOWER_LEFT, LOWER_RIGHT
-#   - Never allocate to TIKTOK_BUTTONS or TIKTOK_TITLE (forbidden zones)
-#   - Place the scene's primary text/title in TITLE zone (top of screen)
-#   - Keep animations centred vertically between UPPER_MAIN and LOWER_MAIN
-#
-# RULE: The TikTok viewer's eye travels TOP → CENTRE → ignores bottom-right.
-# Put your hook text at the top. Put your animation in the centre.
-# Leave the bottom-right quadrant completely empty.
-tiktok_overlay_rules: |
-  Safe canvas: x in [-4.0, +1.33], y in [-4.67, +6.67]
-  Primary text: TOP zone (y near +6.0), not bottom
-  Main animation: UPPER_MAIN / CENTER (y between +1.0 and +5.0)
-  Lower area (y < -2.0): one small accent element max, no primary content
-  Right side (x > +1.33): completely empty — TikTok buttons live here
+  TOP ROW FORBIDDEN (y > +5.33): TikTok search bar — approximately top 130px.
+    All titles and text must sit at y ≤ +5.0. Use TITLE zone (row 1), not row 0.
+  LEFT EDGE FORBIDDEN (x < -3.5): Physical screen boundary — text clips off screen.
+    Always keep at least 0.5 units from the left. Use .to_edge(LEFT, buff=0.5).
+  RIGHT EDGE FORBIDDEN (x > +1.0):  Like / comment / share / follow buttons.
+    All content must sit at x ≤ +1.0. Never use cols 4-5.
+  BOTTOM ROW FORBIDDEN (y < -4.67): Username, song name, caption overlay.
+    All content must sit at y ≥ -4.0. Use LOWER_MAIN zone maximum.
+  SAFE BAND: x in [-3.5, +1.0], y in [-4.0, +5.0].
+    Titles: y ≈ +4.5. Main visual: y ≈ +1.0 to +3.5. Accent: y ≈ -3.0 maximum.

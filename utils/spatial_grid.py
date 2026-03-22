@@ -94,8 +94,11 @@ def _build_zones(aspect: str) -> dict:
         # All content zones below are capped to this safe region.
         zones = [
             # ── Content zones (all within TikTok-safe bounds) ─────────────────
-            z("TITLE",       "Top banner — title/hook text, safe from TikTok overlays",      0,0,0,3),
-            z("SUBTITLE",    "Second row — subtitle or equation header",                      1,1,0,3),
+            # Row 0 is reserved — TikTok's search bar overlays the top ~130px
+            # (≈ top 12% of screen = row 0 in a 6-row grid). TITLE starts at
+            # row 1 so it sits below the search bar with natural breathing room.
+            z("TITLE",       "Title zone — below TikTok search bar (row 1)",                 1,1,0,3),
+            z("SUBTITLE",    "Subtitle / equation header (row 2)",                            2,2,0,3),
             z("MAIN",        "Primary content area — central animation zone",                 1,3,0,3),
             z("UPPER_MAIN",  "Upper animation area — first beat in vertical stack",           1,2,0,3),
             z("LOWER_MAIN",  "Lower animation area — second beat, above TikTok title bar",   3,4,0,3),
@@ -105,8 +108,9 @@ def _build_zones(aspect: str) -> dict:
             z("LOWER_LEFT",  "Lower-left quadrant",                                           3,4,0,1),
             z("LOWER_RIGHT", "Lower-right quadrant (safe — stays left of TikTok buttons)",   3,4,2,3),
             # ── Forbidden zones — marker only, never place content here ───────
-            z("TIKTOK_BUTTONS", "FORBIDDEN — TikTok like/share/follow buttons (right edge)", 1,4,4,5),
-            z("TIKTOK_TITLE",   "FORBIDDEN — TikTok username/caption bar (bottom)",          5,5,0,5),
+            z("TIKTOK_SEARCH", "FORBIDDEN — TikTok search bar (top row, ~130px)",            0,0,0,5),
+            z("TIKTOK_BUTTONS","FORBIDDEN — TikTok like/share/follow buttons (right edge)",  1,4,4,5),
+            z("TIKTOK_TITLE",  "FORBIDDEN — TikTok username/caption bar (bottom)",           5,5,0,5),
         ]
     else:
         zones = [
@@ -163,10 +167,18 @@ def _grid_cell_to_manim(ref: str, aspect: str = "16:9") -> tuple[float, float] |
     x = round(-(fw / 2) + (col + 0.5) * cw, 2)
     y = round( (fh / 2) - (row + 0.5) * ch, 2)
 
-    # Clamp to safe zone (avoid edges where Manim clips content)
-    safe_x = fw / 2 - cw * 0.6   # ~half a cell margin from edge
+    # Clamp to safe zone (avoid edges where Manim clips content).
+    # Portrait gets a larger left margin (0.5 units) because the physical
+    # screen edge clips text — as seen in production. Landscape uses the
+    # standard half-cell margin on both sides.
+    if aspect == "9:16":
+        left_margin  = 0.5          # physical screen edge safety
+        right_margin = cw * 0.6    # TikTok buttons buffer
+    else:
+        left_margin  = cw * 0.6
+        right_margin = cw * 0.6
     safe_y = fh / 2 - ch * 0.6
-    x = max(-safe_x, min(x, safe_x))
+    x = max(-(fw / 2) + left_margin, min(x, (fw / 2) - right_margin))
     y = max(-safe_y, min(y, safe_y))
     return x, y
 

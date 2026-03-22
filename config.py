@@ -134,7 +134,7 @@ class ProcExConfig:
     # ── LLM Models (text) ─────────────────────
     # Fallback chain: Claude → Gemini → OpenAI
     claude_model:        str = "claude-sonnet-4-6"
-    gemini_text_model:   str = "gemini-3.1-pro-preview" # "gemini-3-flash-preview"
+    gemini_text_model:   str = "gemini-3-flash-preview" #"gemini-3.1-pro-preview"
     openai_model:        str = "gpt-5.4-2026-03-05"
 
     # ── Per-agent primary LLM ────────────────────────────────────────────────
@@ -165,7 +165,7 @@ class ProcExConfig:
     # ── Image Generation (NanoBanana) ─────────
     # Pro  → detailed anatomy, labeled diagrams, search grounding
     # Fast → background images, simpler visuals, hybrid scenes
-    nano_pro_model:      str = "gemini-3-pro-image-preview"
+    nano_pro_model:      str = "gemini-3.1-flash-image-preview" #"gemini-3-pro-image-preview"
     nano_fast_model:     str = "gemini-3.1-flash-image-preview"
 
     # ── ElevenLabs (legacy) ───────────────────
