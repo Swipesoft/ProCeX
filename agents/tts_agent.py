@@ -253,6 +253,20 @@ class TTSAgent(BaseAgent):
         else:
             cost_str = "Gemini TTS (see Google AI pricing)"
 
+        # ── Audio humanisation ────────────────────────────────────────────────
+        # Apply subtle post-processing to make Gemini Aoede sound more natural:
+        # warmth EQ, de-essing, micro pitch drift, volume breathing, short reverb.
+        # Skipped gracefully if pydub/soundfile are not installed.
+        try:
+            from utils.audio_humanizer import humanize
+            self._log("Applying audio humanisation (warmth EQ, pitch drift, reverb)...")
+            humanize(final_audio, final_audio, verbose=False)
+            self._log("Audio humanisation done")
+        except ImportError:
+            self._log("Audio humanisation skipped (pydub/soundfile not installed)")
+        except Exception as e:
+            self._log(f"Audio humanisation failed (non-critical): {e}")
+
         self._log(
             f"Audio ready -> {final_audio}\n"
             f"  {time_offset:.1f}s ({time_offset/60:.1f} min) | "
