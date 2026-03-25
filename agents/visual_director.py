@@ -192,6 +192,25 @@ def _build_director_prompt(state: ProcExState) -> str:
             "For subscene splitting: use it when a long scene has distinct structural + process phases."
         )
 
+    # ── Documentary paragraph type strategy hints ────────────────────────────
+    # When scenes carry a paragraph_type from the documentary agent, bias
+    # strategy selection. Empty string = non-documentary scene = normal logic.
+    para_type_guidance = (
+        "DOCUMENTARY PARAGRAPH TYPE HINTS (applies when paragraph_type field is non-empty):\n"
+        "  TECHNICAL  → MANIM strongly preferred. Equations, derivations, diagrams.\n"
+        "               Never use IMAGE_GEN for a TECHNICAL paragraph.\n"
+        "  VOICE      → IMAGE_GEN strongly preferred. A dramatic portrait or historical\n"
+        "               scene depicting the named character in their era and context.\n"
+        "               Use MANIM only if IMAGE_GEN is domain-disabled.\n"
+        "  NARRATOR   → Minimal. A clean title card or single animated text element.\n"
+        "               Prefer short MANIM scene (1-2 elements max). Never overcrowd.\n"
+        "  STORY      → Use content to decide: person/place → IMAGE_GEN, \n"
+        "               process/concept → MANIM.\n"
+        "  (empty)    → Normal pipeline: use standard SPATIAL vs CONCEPTUAL logic.\n"
+        "NOTE: paragraph_type is a HINT, not an override. Domain image_gen gate still\n"
+        "applies — if IMAGE_GEN is disabled for this domain, always use MANIM."
+    )
+
     # Portrait vs landscape zone layout guidance
     if aspect == "9:16":
         zone_layout_note = (
@@ -216,6 +235,7 @@ def _build_director_prompt(state: ProcExState) -> str:
             "splittable": scene.duration_seconds > split_threshold,
             "initial_visual_hint": scene.visual_prompt,
             "word_timestamps_sample": ts_sample,
+            "paragraph_type": getattr(scene, "paragraph_type", ""),
         })
 
     return f"""Domain: {state.domain.value}
@@ -223,6 +243,8 @@ Resolution: {state.resolution} ({aspect})
 Subscene split threshold: {split_threshold}s (scenes marked splittable=true may use subscenes)
 
 {image_gate}
+
+{para_type_guidance}
 
 {zone_layout_note}
 

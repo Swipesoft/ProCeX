@@ -1,0 +1,22 @@
+Collecting tavily-python
+  Downloading tavily_python-0.7.23-py3-none-any.whl.metadata (10 kB)
+Requirement already satisfied: requests in c:\users\emmyf\downloads\procex\procex\.venv\lib\site-packages (from tavily-python) (2.32.5)
+Collecting tiktoken>=0.5.1 (from tavily-python)
+  Downloading tiktoken-0.12.0-cp312-cp312-win_amd64.whl.metadata (6.9 kB)
+Requirement already satisfied: httpx in c:\users\emmyf\downloads\procex\procex\.venv\lib\site-packages (from tavily-python) (0.28.1)
+Collecting regex>=2022.1.18 (from tiktoken>=0.5.1->tavily-python)
+  Downloading regex-2026.2.28-cp312-cp312-win_amd64.whl.metadata (41 kB)
+Requirement already satisfied: charset_normalizer<4,>=2 in c:\users\emmyf\downloads\procex\procex\.venv\lib\site-packages (from requests->tavily-python) (3.4.6)
+Requirement already satisfied: idna<4,>=2.5 in c:\users\emmyf\downloads\procex\procex\.venv\lib\site-packages (from requests->tavily-python) (3.11)
+Requirement already satisfied: urllib3<3,>=1.21.1 in c:\users\emmyf\downloads\procex\procex\.venv\lib\site-packages (from requests->tavily-python) (2.6.3)
+Requirement already satisfied: certifi>=2017.4.17 in c:\users\emmyf\downloads\procex\procex\.venv\lib\site-packages (from requests->tavily-python) (2026.2.25)
+Requirement already satisfied: anyio in c:\users\emmyf\downloads\procex\procex\.venv\lib\site-packages (from httpx->tavily-python) (4.12.1)
+Requirement already satisfied: httpcore==1.* in c:\users\emmyf\downloads\procex\procex\.venv\lib\site-packages (from httpx->tavily-python) (1.0.9)
+Requirement already satisfied: h11>=0.16 in c:\users\emmyf\downloads\procex\procex\.venv\lib\site-packages (from httpcore==1.*->httpx->tavily-python) (0.16.0)
+Requirement already satisfied: typing_extensions>=4.5 in c:\users\emmyf\downloads\procex\procex\.venv\lib\site-packages (from anyio->httpx->tavily-python) (4.15.0)
+Downloading tavily_python-0.7.23-py3-none-any.whl (19 kB)
+Downloading tiktoken-0.12.0-cp312-cp312-win_amd64.whl (878 kB)
+   ---------------------------------------- 878.7/878.7 kB 9.8 MB/s eta 0:00:00
+Downloading regex-2026.2.28-cp312-cp312-win_amd64.whl (277 kB)
+Installing collected packages: regex, tiktoken, tavily-python
+Successfully installed regex-2026.2.28 tavily-python-0.7.23 tiktoken-0.12.0

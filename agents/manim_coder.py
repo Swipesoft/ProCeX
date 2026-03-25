@@ -298,6 +298,19 @@ PREVIOUS ATTEMPT FAILED — READ AND FIX THIS ERROR:
 Fix the error above. Do NOT change the self.wait() values — those are correct.
 """
 
+    # ── Manim skill best-practices injection ─────────────────────────────────
+    skill_section = ""
+    try:
+        from utils.manim_skill_selector import select as _skill_select
+        skill_section = _skill_select(
+            visual_prompt  = scene.visual_prompt,
+            narration_text = scene.narration_text,
+            element_count  = getattr(scene, "element_count", 0),
+            verbose        = False,
+        )
+    except Exception:
+        pass   # rules not installed — degrade silently, never crash pipeline
+
     domain_decoder_section = ""
     if domain_decoder:
         domain_decoder_section = f"""
@@ -326,6 +339,7 @@ VISUAL BRIEF (what to animate):
 {tiktok_safe_zone_section}{anchor_block}
 {domain_decoder_section}
 {layout_rules}
+{skill_section}
 
 ANIMATION STYLE
 ===============

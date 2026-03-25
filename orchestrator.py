@@ -61,8 +61,15 @@ class ProcExOrchestrator:
 
         # ════════════════════════════════════════════════════════════════
         # Stage 2 — ScriptWriter  [sequential]
+        # Bypassed for documentary PDFs — scenes already parsed from tags.
         # ════════════════════════════════════════════════════════════════
-        state = self._run_agent("ScriptWriter", state)
+        if getattr(state, "_is_documentary", False):
+            print(
+                f"[ProcEx] ↩ Skipping ScriptWriter — documentary PDF "
+                f"({len(state.scenes)} scenes already parsed)"
+            )
+        else:
+            state = self._run_agent("ScriptWriter", state)
 
         # ════════════════════════════════════════════════════════════════
         # Stage 3 — TTSAgent ∥ VisualDirector  [parallel A]
@@ -201,6 +208,34 @@ class ProcExOrchestrator:
         hint_text        = topic_hint or state.raw_input[:200]
         state.topic_slug = slugify(hint_text)
         print(f"[ProcEx] Topic slug: {state.topic_slug}")
+
+        # ── Documentary PDF detection ─────────────────────────────────────────
+        # If the PDF was produced by DeepDocumentaryAgent it contains ▸ type
+        # labels. Parse paragraphs directly into scenes — ScriptWriter LLM
+        # re-generation is bypassed so the multi-voice structure is preserved.
+        from utils.documentary_parser import is_documentary_pdf, parse_documentary_scenes
+        if state.raw_input and is_documentary_pdf(state.raw_input):
+            print("[ProcEx] ✓ Documentary PDF detected — parsing tagged paragraphs directly")
+            parsed_scenes = parse_documentary_scenes(
+                state.raw_input,
+                target_minutes=target_minutes,
+            )
+            if parsed_scenes:
+                state.scenes              = parsed_scenes
+                state._is_documentary     = True   # flag for Stage 2 bypass
+                n_voice = sum(1 for s in parsed_scenes if s.paragraph_type == "VOICE")
+                n_tech  = sum(1 for s in parsed_scenes if s.paragraph_type == "TECHNICAL")
+                print(
+                    f"[ProcEx]   {len(parsed_scenes)} scenes parsed — "
+                    f"{n_voice} VOICE, {n_tech} TECHNICAL, "
+                    f"{len(parsed_scenes) - n_voice - n_tech} NARRATOR/STORY"
+                )
+            else:
+                print("[ProcEx] ⚠ Documentary parse returned no scenes — falling back to ScriptWriter")
+                state._is_documentary = False
+        else:
+            state._is_documentary = False
+
         return state
 
     # ── Checkpoint ────────────────────────────────────────────────────────────

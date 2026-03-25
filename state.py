@@ -97,6 +97,22 @@ class Scene:
     # Critic feedback loop — capped at 2 reroutes per scene
     critic_reroute_attempts: int = 0
 
+    # ── Documentary multi-voice fields ───────────────────────────────────────
+    # Set by the documentary PDF parser before TTSAgent runs.
+    # tts_voice: Gemini voice name override for this scene.
+    #   ""        → use cfg.gemini_tts_voice (Aoede) — default for all non-documentary scenes
+    #   "Charon"  → male voice for [VOICE: X] critic/character paragraphs
+    #   Any valid Gemini prebuilt voice name works.
+    tts_voice: str = ""
+
+    # paragraph_type: the documentary structural role of this scene's narration.
+    #   ""          → unset, not a documentary scene — VisualDirector uses normal logic
+    #   "NARRATOR"  → short bridge narration → TEXT_ANIMATION preferred
+    #   "STORY"     → historical/biographical prose → MANIM or IMAGE_GEN (person/place)
+    #   "TECHNICAL" → science/math tutoring → MANIM strongly preferred (equations)
+    #   "VOICE"     → first-person character voice → IMAGE_GEN strongly preferred (portrait)
+    paragraph_type: str = ""
+
 
 # ─────────────────────────────────────────────
 # Pipeline State

@@ -67,17 +67,24 @@ class TTSAgent(BaseAgent):
         audio_dir = self.cfg.dirs["audio"]
         os.makedirs(audio_dir, exist_ok=True)
 
-        generate_config = types.GenerateContentConfig(
-            temperature          = 1.0,
-            response_modalities  = ["AUDIO"],
-            speech_config        = types.SpeechConfig(
-                voice_config = types.VoiceConfig(
-                    prebuilt_voice_config = types.PrebuiltVoiceConfig(
-                        voice_name = self.cfg.gemini_tts_voice,
+        def _make_gemini_config(voice_name: str) -> types.GenerateContentConfig:
+            """
+            Build a Gemini TTS config for the given voice name.
+            Called per-scene so documentary multi-voice scenes each get their
+            own config (Aoede for narrator/story/technical, Charon or other
+            male voice for [VOICE: X] character paragraphs).
+            """
+            return types.GenerateContentConfig(
+                temperature          = 1.0,
+                response_modalities  = ["AUDIO"],
+                speech_config        = types.SpeechConfig(
+                    voice_config = types.VoiceConfig(
+                        prebuilt_voice_config = types.PrebuiltVoiceConfig(
+                            voice_name = voice_name,
+                        )
                     )
-                )
-            ),
-        )
+                ),
+            )
 
         def _process_scene_gemini(scene):
             """Call Gemini TTS for one scene, save as MP3. Thread-safe."""
@@ -85,11 +92,27 @@ class TTSAgent(BaseAgent):
             if not raw_text:
                 return scene, None, 0.0
 
+            # Strip documentary paragraph type tags before TTS so they are
+            # never read aloud. Tags look like: [NARRATOR], [STORY],
+            # [TECHNICAL], [VOICE: Einstein]. We strip the tag line entirely.
+            raw_text = self._strip_paragraph_tags(raw_text)
+            if not raw_text:
+                return scene, None, 0.0
+
+            # Resolve voice: use scene.tts_voice override if set (documentary
+            # multi-voice), otherwise fall back to global cfg voice (Aoede).
+            voice_name     = getattr(scene, "tts_voice", "") or self.cfg.gemini_tts_voice
+            generate_config = _make_gemini_config(voice_name)
+
             text       = self._clean_narration_for_tts(raw_text)
             chunk_path = os.path.join(
                 audio_dir, f"{state.topic_slug}_scene_{scene.id:02d}.mp3"
             )
-            self._log(f"Scene {scene.id}: {len(text)} chars -> Gemini TTS ({self.cfg.gemini_tts_voice})...")
+            self._log(
+                f"Scene {scene.id}: {len(text)} chars -> Gemini TTS "                f"({voice_name}" +
+                (" [VOICE override]" if voice_name != self.cfg.gemini_tts_voice else "") +
+                ")..."
+            )
 
             try:
                 # Collect all PCM chunks from streaming response
@@ -371,6 +394,42 @@ class TTSAgent(BaseAgent):
         return ts
 
     # ── Narration preprocessor ────────────────────────────────────────────────
+
+    @staticmethod
+    def _strip_paragraph_tags(text: str) -> str:
+        """
+        Remove documentary paragraph type tags from narration text so they
+        are never read aloud by the TTS engine.
+
+        Strips lines that are purely a tag like:
+          [NARRATOR]
+          [STORY]
+          [TECHNICAL]
+          [VOICE: Einstein]
+          ▸ NARRATOR
+          ▸ VOICE: EINSTEIN
+
+        Also strips inline occurrences at the start of the text.
+        Preserves all other content unchanged — non-documentary scenes
+        pass through this function with zero modification.
+        """
+        import re
+        # Strip full lines that are just a tag
+        text = re.sub(
+            r'(?m)^\s*(?:\[(?:NARRATOR|STORY|TECHNICAL|VOICE[^\]]*)]|'
+            r'▸\s*(?:NARRATOR|STORY|TECHNICAL|VOICE[^\n]*))\s*$',
+            "",
+            text,
+        )
+        # Strip leading inline tag if it starts the text block
+        text = re.sub(
+            r'^\s*\[(?:NARRATOR|STORY|TECHNICAL|VOICE[^\]]*)]\s*',
+            "",
+            text,
+        )
+        # Collapse multiple blank lines left by stripping
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        return text.strip()
 
     @staticmethod
     def _clean_narration_for_tts(text: str) -> str:

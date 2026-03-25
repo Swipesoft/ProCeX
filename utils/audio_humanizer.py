@@ -29,11 +29,11 @@ def humanize(
     input_path:  str,
     output_path: str | None = None,
     *,
-    warmth_db:       float = 2.0,     # low-mid boost in dB (0 = skip)
-    deness_db:       float = 1.5,     # high-freq cut in dB  (0 = skip)
-    pitch_range:     float = 0.12,    # max semitone drift (0 = skip)
-    volume_depth:    float = 0.018,   # max ±volume modulation fraction
-    reverb_mix:      float = 0.06,    # wet/dry reverb mix (0 = skip)
+    warmth_db:       float = 1.0,     # low-mid boost in dB — 1dB is felt not heard
+    deness_db:       float = 0.8,     # high-freq cut in dB — subtle sibilance taming
+    pitch_range:     float = 0.06,    # max semitone drift — halved; 0.06 is truly inaudible
+    volume_depth:    float = 0.012,   # max ±volume modulation — reduced to ±1.2%
+    reverb_mix:      float = 0.03,    # wet/dry reverb mix — 3% barely adds air
     verbose:         bool  = False,
 ) -> str:
     """
@@ -43,12 +43,15 @@ def humanize(
     ----------
     input_path  : Path to the source MP3 or WAV file.
     output_path : Where to write the result. Defaults to overwriting input_path.
-    warmth_db   : Low-mid shelf boost. 2.0dB is barely perceptible but adds body.
-    deness_db   : High-freq shelf cut. 1.5dB reduces synthetic sibilance.
-    pitch_range : Max pitch drift in semitones. 0.12 is inaudible as pitch shift
-                  but removes the robotic constant-pitch feel.
-    volume_depth: Amplitude of the slow volume breathing. 0.018 = ±1.8%.
-    reverb_mix  : Wet fraction for short room reverb. 0.06 = 6% wet.
+    warmth_db   : Low-mid shelf boost. 1.0dB is felt not heard — adds body without
+                  sounding processed. 2.0dB was too obvious when stacked with other effects.
+    deness_db   : High-freq shelf cut. 0.8dB tames Aoede sibilance imperceptibly.
+    pitch_range : Max pitch drift in semitones. 0.06 is genuinely inaudible as pitch
+                  shift but removes the robotic constant-pitch feel.
+                  0.12 with short segments created audible flutter — halved.
+    volume_depth: Amplitude of the slow volume breathing. 0.012 = ±1.2%.
+    reverb_mix  : Wet fraction for short room reverb. 0.03 = 3% — adds air only.
+                  0.06 compounded with EQ and pitch to sound obviously processed.
     verbose     : Log processing steps.
 
     Returns
@@ -187,7 +190,7 @@ def _micro_pitch(
     x: np.ndarray,
     sr: int,
     max_semitones: float = 0.12,
-    segment_ms: int = 400,
+    segment_ms: int = 1500,  # longer segments = smoother pitch drift, no flutter
 ) -> np.ndarray:
     """
     Divide audio into overlapping segments, resample each by a slightly
@@ -238,7 +241,17 @@ def _micro_pitch(
         resampled *= window
         out[start:start + seg_len] += resampled
 
-    return out[:len(x)]
+    result = out[:len(x)]
+
+    # RMS normalisation — overlap-add with Hanning window at longer segment
+    # sizes causes energy loss (window doesn't sum to 1.0 perfectly at edges).
+    # Restore output RMS to match input RMS so pitch drift doesn't change volume.
+    rms_in  = float(np.sqrt(np.mean(x ** 2))) if len(x) > 0 else 1.0
+    rms_out = float(np.sqrt(np.mean(result ** 2)))
+    if rms_out > 1e-8:
+        result = result * (rms_in / rms_out)
+
+    return result.astype(np.float32)
 
 
 def _volume_breath(
@@ -272,16 +285,16 @@ def _simple_reverb(
     x: np.ndarray,
     sr: int,
     mix: float = 0.06,
-    pre_delay_ms: float = 5.0,
-    decay: float = 0.28,
-    n_taps: int = 6,
+    pre_delay_ms: float = 4.0,
+    decay: float = 0.12,   # was 0.28 — metallic tail reduced
+    n_taps: int = 3,        # was 6 — fewer taps, cleaner air
 ) -> np.ndarray:
     """
     Lightweight comb-filter reverb. Simulates a small room (broadcast booth)
     with a short pre-delay and fast decay. No convolution IR needed.
     """
     pre_samples = int(sr * pre_delay_ms / 1000)
-    wet  = np.zeros(len(x) + pre_samples * n_taps, dtype=np.float32)
+    wet         = np.zeros(len(x) + pre_samples * n_taps, dtype=np.float32)
 
     # Comb filter: multiple delayed, decaying copies
     rng = np.random.default_rng(seed=13)

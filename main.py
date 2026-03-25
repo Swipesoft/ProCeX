@@ -83,12 +83,26 @@ Examples:
             "youtube-tutorial (deep explainer, 4-10min)"
         )
     )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["research", "documentary"],
+        default=None,
+        help=(
+            "Generation mode when no --input is given. "
+            "'research' = academic deep research report (default when only --topic given). "
+            "'documentary' = Netflix-style multi-voice documentary with Tavily web search."
+        )
+    )
 
     args = parser.parse_args()
 
     # Validate
     if not args.resume and not args.input and not args.topic:
-        parser.error("Either --input, --topic (for deep research), or --resume is required")
+        parser.error("Either --input, --topic, or --resume is required")
+
+    if args.mode and args.input:
+        parser.error("--mode and --input are mutually exclusive. Use --mode for research/documentary, --input for PDF teaching.")
 
     if args.input and not os.path.exists(args.input):
         parser.error(f"Input file not found: {args.input}")
@@ -107,7 +121,7 @@ Examples:
 ╔══════════════════════════════════════════════════════════╗
 ║           ProcEx — Procedural Cinematic Explainer         ║
 ╚══════════════════════════════════════════════════════════╝
-  Input:       {args.input or 'N/A (deep research mode)'}
+  Input:       {args.input or f"N/A ({args.mode or 'research'} mode)"}
   Topic:       {args.topic or 'auto-detect'}
   Resolution:  {args.resolution}
   Duration:    {args.minutes} min (target)
@@ -115,21 +129,42 @@ Examples:
   Output dir:  {args.output_dir}/videos/
 """)
 
-    # ── Deep research mode: no --input, topic provided ────────────────────────
+    # ── Mode dispatch: research / documentary / PDF input ────────────────────
     input_path = args.input or ""
     pipeline   = ProcExOrchestrator(cfg)   # init once — owns the llm client
 
     if not input_path and args.topic and not args.resume:
-        print("[ProcEx] No --input provided — entering deep research mode...")
-        from agents.deep_research import DeepResearchAgent
+        mode = args.mode or "research"   # default to research if --mode not given
 
-        research   = DeepResearchAgent(cfg, pipeline.llm)  # reuse orchestrator's llm
-        input_path = research.research(
-            topic          = args.topic,
-            target_minutes = args.minutes,
-        )
-        print(f"[ProcEx] ✓ Research report generated: {input_path}")
-        print(f"[ProcEx] ▶ Handing off to video pipeline...")
+        if mode == "documentary":
+            print("[ProcEx] ▶ Entering deep documentary mode (Tavily + multi-voice)...")
+            from agents.deep_documentary import DeepDocumentaryAgent
+            doc_agent  = DeepDocumentaryAgent(cfg, pipeline.llm)
+            input_path = doc_agent.research(
+                topic          = args.topic,
+                target_minutes = args.minutes,
+            )
+            print(f"[ProcEx] ✓ Documentary script generated: {input_path}")
+            print(f"[ProcEx] ▶ Handing off to video pipeline...")
+            # Auto-select tiktok-thriller if style is auto for documentary
+            if args.style == "auto":
+                cfg = cfg.__class__(
+                    output_root        = args.output_dir,
+                    presentation_style = "tiktok-thriller",
+                )
+                pipeline = ProcExOrchestrator(cfg)
+                print("[ProcEx] ℹ Auto-selected style: tiktok-thriller for documentary")
+
+        else:  # research (default)
+            print("[ProcEx] ▶ No --input provided — entering deep research mode...")
+            from agents.deep_research import DeepResearchAgent
+            research   = DeepResearchAgent(cfg, pipeline.llm)
+            input_path = research.research(
+                topic          = args.topic,
+                target_minutes = args.minutes,
+            )
+            print(f"[ProcEx] ✓ Research report generated: {input_path}")
+            print(f"[ProcEx] ▶ Handing off to video pipeline...")
 
     try:
         output_path = pipeline.run(
