@@ -19,6 +19,7 @@ class VisualStrategy(str, Enum):
     IMAGE_GEN        = "IMAGE_GEN"         # NanoBanana: anatomical structures, real-world medical imagery
     IMAGE_MANIM_HYBRID = "IMAGE_GEN"  # Retired — maps to IMAGE_GEN; NanoBanana handles labels natively
     TEXT_ANIMATION   = "TEXT_ANIMATION"    # Manim but just cinematic title/quote cards
+    VIDEO_GEN        = "VIDEO_GEN"         # Seedance 1.5 Pro: live video generation (4-12s clips)
 
 
 class Domain(str, Enum):
@@ -96,6 +97,15 @@ class Scene:
 
     # Critic feedback loop — capped at 2 reroutes per scene
     critic_reroute_attempts: int = 0
+
+    # TTS failure flag — set when all retries exhausted for this scene.
+    # Scenes with tts_failed=True are purged from state.scenes before
+    # AssemblerAgent runs so they never produce silence gaps in the video.
+    tts_failed: bool = False
+
+    # Video generation fields (VIDEO_GEN strategy)
+    video_path:      Optional[str] = None   # path to generated .mp4 clip
+    novita_task_id:  Optional[str] = None   # async task_id from Novita API
 
     # ── Documentary multi-voice fields ───────────────────────────────────────
     # Set by the documentary PDF parser before TTSAgent runs.

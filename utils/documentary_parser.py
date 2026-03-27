@@ -48,8 +48,12 @@ import re
 from typing import Optional
 
 # ── Voice assignments ──────────────────────────────────────────────────────────
-# Default voice for [VOICE: X] paragraphs — male to contrast Aoede narrator
-DOCUMENTARY_VOICE_DEFAULT = "Charon"
+# Default voice for [VOICE: X] paragraphs — male to contrast Aoede narrator.
+# Fenrir is used because it is consistently available in gemini-2.5-flash-preview-tts
+# and has a notably deeper register than Charon. Override in config.py via
+# gemini_tts_voice_male if you want a different character voice.
+import os
+DOCUMENTARY_VOICE_DEFAULT = os.environ.get("GEMINI_TTS_VOICE_MALE", "Fenrir")
 
 # Optional per-character overrides — extend as needed
 # Any character not listed here gets DOCUMENTARY_VOICE_DEFAULT

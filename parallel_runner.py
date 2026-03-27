@@ -212,14 +212,24 @@ def run_generation_render_pipeline(
     critic   = VLMCritic(cfg, llm)
     director = VisualDirector(cfg, llm)
 
+    # ── VIDEO_GEN budget enforcement ─────────────────────────────────────
+    from agents.video_gen_agent import VideoGenAgent, DEFAULT_CLIP_SECS
+    videogen = VideoGenAgent(cfg, llm)
+    state    = VideoGenAgent.enforce_budget(state)
+
     # Classify scenes by their initial strategy
     manim_scenes  = [s for s in state.scenes if s.visual_strategy in
                      (VisualStrategy.MANIM, VisualStrategy.TEXT_ANIMATION)]
     image_scenes  = [s for s in state.scenes if s.visual_strategy in
                      (VisualStrategy.IMAGE_GEN,)]
+    video_scenes  = [s for s in state.scenes if s.visual_strategy ==
+                     VisualStrategy.VIDEO_GEN]
 
     total_scenes  = [len(state.scenes)]
-    print(f"[Parallel] Stage B: {len(manim_scenes)} Manim, {len(image_scenes)} image scenes")
+    print(
+        f"[Parallel] Stage B: {len(manim_scenes)} Manim, "
+        f"{len(image_scenes)} image, {len(video_scenes)} video scenes"
+    )
 
     # ── Queues ────────────────────────────────────────────────────────────
     code_queue   = Queue()   # SceneTask → coder workers
@@ -344,6 +354,38 @@ def run_generation_render_pipeline(
             render_queue.put(SceneTask(scene=scene))
 
         # IMAGE_MANIM_HYBRID retired — IMAGE_GEN handles all annotations
+
+    # ── Video gen worker ──────────────────────────────────────────────────
+    # Runs in a daemon thread per scene — polls Novita until done or timeout.
+    # On failure degrades to IMAGE_GEN so the scene always produces a frame.
+
+    def video_worker(scene: Scene):
+        """Generate one VIDEO_GEN scene via Novita Seedance 1.5 Pro."""
+        log(f"Video: Scene {scene.id} VIDEO_GEN generating...")
+        videos_dir = cfg.dirs["videos"]
+        try:
+            clip_path = videogen.generate_for_scene(
+                scene      = scene,
+                resolution = state.resolution,
+                videos_dir = videos_dir,
+            )
+        except Exception as e:
+            clip_path = None
+            log(f"Video: Scene {scene.id} generation error: {e}")
+
+        if clip_path and os.path.exists(clip_path):
+            scene.clip_path  = clip_path
+            scene.video_path = clip_path
+            log(f"Video: Scene {scene.id} ✓ → {os.path.basename(clip_path)}")
+            mark_done(scene, clip_path)
+        else:
+            # Degrade to IMAGE_GEN — dispatch to image_worker
+            log(f"Video: Scene {scene.id} failed — degrading to IMAGE_GEN")
+            scene.visual_strategy = VisualStrategy.IMAGE_GEN
+            with done_lock:
+                # image_worker will call mark_done when it completes
+                pass
+            image_worker(1, scene)
 
     # ── Renderer worker ───────────────────────────────────────────────────
 
@@ -546,6 +588,15 @@ def run_generation_render_pipeline(
 
     for scene in manim_scenes:
         code_queue.put(SceneTask(scene=scene))
+
+    # ── Dispatch VIDEO_GEN scenes in background threads ───────────────────
+    # Each video generation is a long async poll — run in parallel with coders
+    from agents.video_gen_agent import DEFAULT_CLIP_SECS
+    for s in video_scenes:
+        t = threading.Thread(
+            target=video_worker, args=(s,), name=f"Video-{s.id}", daemon=True
+        )
+        t.start()
 
     # ── Launch coder workers ──────────────────────────────────────────────
 

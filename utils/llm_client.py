@@ -177,6 +177,11 @@ class LLMClient:
         image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime)
         text_part  = types.Part.from_text(text=user)
 
+        # Timeout: vision calls can be slow for large frames but should never
+        # hang indefinitely. 90s is generous for a 3-frame VLMCritic call.
+        timeout_secs = 90 + (max_tokens // 1000) * 2
+        http_opts    = types.HttpOptions(timeout=timeout_secs * 1000)  # ms
+
         response = self._genai.models.generate_content(
             model    = model,
             contents = types.Content(parts=[image_part, text_part], role="user"),
@@ -184,6 +189,7 @@ class LLMClient:
                 system_instruction = system,
                 max_output_tokens  = max_tokens,
                 temperature        = temperature,
+                http_options       = http_opts,
             ),
         )
         return response.text
@@ -238,7 +244,8 @@ class LLMClient:
             ),
             "gemini": (
                 self._genai,
-                lambda s, u, mt, temp: self._call_gemini(s, u, mt, temp, model_override)
+                lambda s, u, mt, temp: self._call_gemini(s, u, mt, temp, model_override,
+                                                            json_mode=json_mode)
             ),
             "openai": (
                 self._openai,
@@ -272,31 +279,55 @@ class LLMClient:
         if not model.startswith("claude"):
             model = self.cfg.claude_model
 
+        # Timeout scales with max_tokens — large documentary writes need ~120s.
+        # Without a timeout, dropped connections hang forever (KeyboardInterrupt
+        # was the only escape). Formula: 60s base + 3s per 1000 output tokens.
+        timeout_secs = 60 + (max_tokens // 1000) * 3
+
+        import httpx
         response = self._anthropic.messages.create(
             model=model,
             max_tokens=max_tokens,
             temperature=temperature,
             system=system,
             messages=[{"role": "user", "content": user}],
+            timeout=httpx.Timeout(
+                connect = 15.0,
+                read    = float(timeout_secs),
+                write   = 30.0,
+                pool    = 10.0,
+            ),
         )
         return response.content[0].text
 
     # ── Gemini ────────────────────────────────────────────────────────────────
 
-    def _call_gemini(self, system, user, max_tokens, temperature, model_override):
+    def _call_gemini(self, system, user, max_tokens, temperature, model_override,
+                     json_mode: bool = False):
         from google.genai import types
         model = model_override or self.cfg.gemini_text_model
         if model.startswith("claude") or model.startswith("gpt"):
             model = self.cfg.gemini_text_model
 
+        timeout_secs = 60 + (max_tokens // 1000) * 3
+        http_opts    = types.HttpOptions(timeout=timeout_secs * 1000)  # ms
+
+        # Use response_mime_type to force JSON output from Gemini.
+        # Prompt-only JSON instructions are unreliable — Gemini frequently
+        # ignores them and returns prose, causing empty query fields.
+        config_kwargs = dict(
+            system_instruction = system,
+            max_output_tokens  = max_tokens,
+            temperature        = temperature,
+            http_options       = http_opts,
+        )
+        if json_mode:
+            config_kwargs["response_mime_type"] = "application/json"
+
         response = self._genai.models.generate_content(
             model=model,
             contents=user,
-            config=types.GenerateContentConfig(
-                system_instruction=system,
-                max_output_tokens=max_tokens,
-                temperature=temperature,
-            ),
+            config=types.GenerateContentConfig(**config_kwargs),
         )
         return response.text
 

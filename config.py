@@ -134,7 +134,7 @@ class ProcExConfig:
     # ── LLM Models (text) ─────────────────────
     # Fallback chain: Claude → Gemini → OpenAI
     claude_model:        str = "claude-sonnet-4-6"
-    gemini_text_model:   str = "gemini-3-flash-preview" #"gemini-3.1-pro-preview"
+    gemini_text_model:   str = "gemini-3-flash-preview"
     openai_model:        str = "gpt-5.4-2026-03-05"
 
     # ── Per-agent primary LLM ────────────────────────────────────────────────
@@ -181,9 +181,13 @@ class ProcExConfig:
 
     # ── Gemini TTS (default) ──────────────────
     # gemini-2.5-flash-preview-tts — high-quality, expressive narration
-    # Voices: Aoede, Charon, Fenrir, Kore, Orus, Puck, Schedar, Sulafat...
-    gemini_tts_model:    str = "gemini-2.5-flash-preview-tts"
-    gemini_tts_voice:    str = "Aoede"
+    # Voices for gemini-2.5-flash-preview-tts:
+    #   Female: Aoede, Kore, Leda, Schedar, Sulafat, Zephyr
+    #   Male:   Charon, Fenrir, Orus, Puck
+    # Fenrir is used for documentary [VOICE: X] paragraphs — deep, distinct male register
+    gemini_tts_model:         str = "gemini-2.5-flash-preview-tts"
+    gemini_tts_voice:         str = "Aoede"    # narrator / story / technical
+    gemini_tts_voice_male:    str = "Fenrir"   # [VOICE: X] character paragraphs
 
     # ── TTS provider selection ────────────────
     # "gemini"  → Gemini 2.5 Flash TTS (default, uses GEMINI_API_KEY)

@@ -155,17 +155,19 @@ class ImageGenAgent(BaseAgent):
             label_str = ", ".join(scene.label_list[:8])
             additions.append(f"clearly labeled callouts for: {label_str}")
 
-        # TikTok safe zone — only for portrait renders
+        # TikTok safe zone + anti-UI-replication — only for portrait renders
         if aspect_ratio == "9:16":
             additions.append(
-                "CRITICAL COMPOSITION RULE for TikTok: keep ALL visual content "
-                "in the centre band of the frame. "
-                "Leave the TOP 130px completely empty (TikTok search bar overlay). "
-                "Leave the BOTTOM 200px completely empty (TikTok caption/username bar). "
-                "Leave the RIGHT 120px completely empty (TikTok like/comment/share buttons). "
-                "Place titles and key content in the upper-centre. "
-                "Place diagrams and animations in the middle. "
-                "The lower-centre can have one small accent element only"
+                "CRITICAL COMPOSITION RULE for TikTok portrait (9:16): "
+                "This must be a clean standalone image — NOT a screenshot or mockup of TikTok. "
+                "Do NOT draw or include any TikTok UI elements: no like buttons, no heart icons, "
+                "no comment icons, no share arrows, no follow buttons, no username overlays, "
+                "no caption bars, no search bars, no progress bars, no notification badges. "
+                "Do NOT replicate the visual appearance of a phone showing a TikTok video. "
+                "Just generate the requested image content, nothing else. "
+                "Composition: keep all content in the centre band — "
+                "leave the top 130px empty, bottom 200px empty, right 120px empty. "
+                "Place key content in the upper-centre, diagrams in the middle"
             )
 
         if additions:

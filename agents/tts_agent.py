@@ -100,8 +100,16 @@ class TTSAgent(BaseAgent):
                 return scene, None, 0.0
 
             # Resolve voice: use scene.tts_voice override if set (documentary
-            # multi-voice), otherwise fall back to global cfg voice (Aoede).
-            voice_name     = getattr(scene, "tts_voice", "") or self.cfg.gemini_tts_voice
+            # multi-voice). "male" is a sentinel that resolves to
+            # cfg.gemini_tts_voice_male (Fenrir by default) — allows
+            # documentary_parser to set a voice without hardcoding a name.
+            raw_voice  = getattr(scene, "tts_voice", "") or ""
+            if raw_voice.lower() in ("male", "fenrir", "charon", "orus", "puck"):
+                voice_name = getattr(self.cfg, "gemini_tts_voice_male", raw_voice) or raw_voice
+            elif raw_voice:
+                voice_name = raw_voice
+            else:
+                voice_name = self.cfg.gemini_tts_voice
             generate_config = _make_gemini_config(voice_name)
 
             text       = self._clean_narration_for_tts(raw_text)
@@ -114,33 +122,66 @@ class TTSAgent(BaseAgent):
                 ")..."
             )
 
-            try:
-                # Collect all PCM chunks from streaming response
-                pcm_data = b""
-                mime_type = "audio/L16;rate=24000"
-                for chunk in client.models.generate_content_stream(
-                    model    = self.cfg.gemini_tts_model,
-                    contents = text,
-                    config   = generate_config,
-                ):
-                    if not chunk.parts:
-                        continue
-                    part = chunk.parts[0]
-                    if part.inline_data and part.inline_data.data:
-                        pcm_data  += part.inline_data.data
-                        mime_type  = part.inline_data.mime_type or mime_type
+            # ── Retry loop with rate-limit-aware backoff ─────────────────
+            MAX_TTS_RETRIES = 5
+            last_error      = None
 
-                if not pcm_data:
-                    raise RuntimeError("Gemini TTS returned no audio data")
+            for attempt in range(1, MAX_TTS_RETRIES + 1):
+                try:
+                    # Collect all PCM chunks from streaming response
+                    pcm_data = b""
+                    mime_type = "audio/L16;rate=24000"
+                    for chunk in client.models.generate_content_stream(
+                        model    = self.cfg.gemini_tts_model,
+                        contents = text,
+                        config   = generate_config,
+                    ):
+                        if not chunk.parts:
+                            continue
+                        part = chunk.parts[0]
+                        if part.inline_data and part.inline_data.data:
+                            pcm_data  += part.inline_data.data
+                            mime_type  = part.inline_data.mime_type or mime_type
 
-                # Convert PCM L16 → WAV → MP3 via ffmpeg
-                wav_bytes = self._pcm_to_wav(pcm_data, mime_type)
-                self._wav_to_mp3(wav_bytes, chunk_path)
+                    if not pcm_data:
+                        raise RuntimeError("Gemini TTS returned no audio data")
 
-            except Exception as e:
-                self._log(f"Scene {scene.id} Gemini TTS failed: {e} — writing silence")
-                chunk_path = self._write_silence(scene.duration_seconds, chunk_path)
-                return scene, chunk_path, scene.duration_seconds
+                    # Convert PCM L16 → WAV → MP3 via ffmpeg
+                    wav_bytes = self._pcm_to_wav(pcm_data, mime_type)
+                    self._wav_to_mp3(wav_bytes, chunk_path)
+                    last_error = None
+                    break   # success — exit retry loop
+
+                except Exception as e:
+                    last_error = e
+                    err_str    = str(e)
+
+                    # Parse retry delay from 429 response if present
+                    # Gemini embeds: "Please retry in 19.206856505s."
+                    import re as _re
+                    delay_match = _re.search(r'retry in\s+([\d.]+)s', err_str, _re.IGNORECASE)
+                    if delay_match:
+                        sleep_secs = float(delay_match.group(1)) + 2.0  # +2s buffer
+                    else:
+                        sleep_secs = min(5.0 * attempt, 60.0)  # exponential cap at 60s
+
+                    if attempt < MAX_TTS_RETRIES:
+                        self._log(
+                            f"Scene {scene.id} Gemini TTS attempt {attempt}/{MAX_TTS_RETRIES} "
+                            f"failed: {err_str[:120]} — retrying in {sleep_secs:.1f}s"
+                        )
+                        import time as _time
+                        _time.sleep(sleep_secs)
+                    else:
+                        self._log(
+                            f"Scene {scene.id} Gemini TTS FAILED after {MAX_TTS_RETRIES} "
+                            f"attempts: {err_str[:120]} — marking scene for purge"
+                        )
+
+            if last_error is not None:
+                # All retries exhausted — flag scene for purge instead of writing silence
+                scene.tts_failed = True
+                return scene, None, 0.0
 
             chunk_duration = self._probe_duration(chunk_path)
             if chunk_duration <= 0:
@@ -228,6 +269,16 @@ class TTSAgent(BaseAgent):
                     scene_results[s.id] = (chunk_path, dur)
                     self._log(f"Scene {s.id}: {dur:.1f}s TTS done")
 
+        # ── Purge TTS-failed scenes ──────────────────────────────────────────
+        # Scenes where all TTS retries exhausted are removed from state.scenes
+        # so they never produce silence gaps or misaligned audio in the video.
+        failed_ids = {s.id for s in state.scenes if getattr(s, "tts_failed", False)}
+        if failed_ids:
+            self._log(
+                f"Purging {len(failed_ids)} scene(s) with failed TTS: {sorted(failed_ids)}"
+            )
+            state.scenes = [s for s in state.scenes if s.id not in failed_ids]
+
         for scene in state.scenes:
             if scene.id not in scene_results:
                 continue
@@ -289,6 +340,20 @@ class TTSAgent(BaseAgent):
             self._log("Audio humanisation skipped (pydub/soundfile not installed)")
         except Exception as e:
             self._log(f"Audio humanisation failed (non-critical): {e}")
+
+        # ── Background music mixing ───────────────────────────────────────────
+        # Mix acapella/action tracks at 5% volume under the TTS narration.
+        # Skipped gracefully if songs/ directory is missing.
+        try:
+            from utils.music_mixer import mix_music_into_audio
+            mix_music_into_audio(
+                final_audio_path = final_audio,
+                scenes           = state.scenes,
+                output_root      = self.cfg.output_root,
+                log_fn           = self._log,
+            )
+        except Exception as e:
+            self._log(f"Music mixing skipped (non-critical): {e}")
 
         self._log(
             f"Audio ready -> {final_audio}\n"

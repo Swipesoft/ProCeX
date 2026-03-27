@@ -92,48 +92,57 @@ SEARCH_DEPTH   = "advanced"
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 _NEXT_QUERY_SYSTEM = """\
-You are a documentary researcher deciding what to search for next.
-You have already gathered information on a topic. Based on what you know
-and what is still missing, you will decide the single best next search query
-to make the documentary richer, more accurate, and more dramatically compelling.
+You are a documentary researcher. Your ONLY job is to output a JSON object
+specifying the next web search query to run.
 
-Think like a Netflix documentary director: you want human stories, specific
-dates, named controversies, surprising ironies, and technical clarity.
+You will receive: a topic, a summary of what has been found so far, and
+a list of gaps still needing research.
 
-QUERY RULES:
-  - The query must be 3 to 8 words. No more, no less.
-  - It must be a real, complete, searchable phrase.
-  - GOOD: "Lobachevsky parallel postulate proof 1830"
-  - GOOD: "Gauss non-Euclidean geometry secret"
-  - BAD:  "Farkas" (too short, not specific)
-  - BAD:  "what did Farkas Bolyai think about the foundations of geometry" (too long)
-
-OUTPUT: Return ONLY valid JSON. No preamble. No markdown.
-{{
+You must respond with EXACTLY this JSON structure and nothing else:
+{
   "done": false,
-  "reason": "<one sentence: what gap this search fills>",
-  "query": "<3 to 8 word search query>"
-}}
+  "reason": "one sentence explaining what gap this search fills",
+  "query": "3 to 8 word search phrase"
+}
 
-If you believe you have enough material for a complete documentary (all major
-characters, key dates, technical substance, controversies), set "done": true
-and leave query and reason as empty strings.
+CONCRETE EXAMPLE — topic is Euclid, we know biography but not the controversy:
+{
+  "done": false,
+  "reason": "Need to find who first challenged the parallel postulate and when",
+  "query": "Lobachevsky parallel postulate challenge 1830"
+}
+
+EXAMPLE when story is complete:
+{
+  "done": true,
+  "reason": "",
+  "query": ""
+}
+
+RULES for the query field:
+  - Minimum 3 words, maximum 8 words
+  - A real searchable phrase, not a question
+  - Include names, dates, or places where possible
+  - Never repeat a query already searched
+
+Output ONLY the JSON object. No explanation. No markdown. No preamble.
 """
 
 _NEXT_QUERY_USER = """\
 TOPIC: {topic}
 
-SEARCHES COMPLETED: {n_done} of {max_searches} maximum.
+SEARCHES COMPLETED SO FAR: {n_done} of {max_searches}
 
-WHAT WE KNOW SO FAR:
+RESEARCH GATHERED SO FAR:
 {summary}
 
-CHARACTERS ALREADY RESEARCHED: {characters}
+FIGURES ALREADY COVERED: {characters}
 
-WHAT STILL FEELS MISSING OR UNDERDEVELOPED:
+WHAT IS STILL MISSING:
 {gaps}
 
-Decide the next search query, or declare done if the story is complete.
+Now output your JSON response with the next search query.
+Remember: respond with ONLY the JSON object, nothing else.
 """
 
 _WRITER_SYSTEM = """\
