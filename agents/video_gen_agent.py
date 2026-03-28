@@ -45,7 +45,7 @@ from utils.llm_client import LLMClient
 # ── API constants ─────────────────────────────────────────────────────────────
 NOVITA_T2V_URL     = "https://api.novita.ai/v3/async/seedance-v1.5-pro-t2v"
 NOVITA_I2V_URL     = "https://api.novita.ai/v3/async/seedance-v1.5-pro-i2v"
-NOVITA_RESULT_URL  = "https://api.novita.ai/v3/async/task-result/{task_id}"
+NOVITA_RESULT_URL  = "https://api.novita.ai/v3/async/task-result"  # task_id as query param
 
 POLL_INTERVAL_SECS  = 5
 POLL_TIMEOUT_SECS   = 300   # 5 min max wait per clip
@@ -136,7 +136,23 @@ class VideoGenAgent(BaseAgent):
         # Map our aspect ratio to Novita's ratio string
         novita_ratio = "9:16" if res.is_portrait else "16:9"
 
-        clip_secs = max(4, min(DEFAULT_CLIP_SECS, 12))
+        tts_dur   = getattr(scene, "tts_duration", 0.0) or scene.duration_seconds
+
+        # API max is 12s but >8s is expensive and the quality gap is minimal.
+        # For scenes longer than 8s, generate an 8s clip and let the assembler
+        # freeze-extend the last frame for the remainder. This is better than
+        # the alternative (generating a static image for the whole duration)
+        # because we still get 8s of live motion at the start.
+        # For scenes <= 8s, match the actual TTS duration exactly (clamped 4-8).
+        if tts_dur > 8.0:
+            clip_secs = 8   # cap at 8s — remainder covered by freeze-extend
+            self._log(
+                f"Scene {scene.id}: tts_duration={tts_dur:.1f}s > 8s — "
+                f"generating 8s clip, assembler will freeze-extend remaining "
+                f"{tts_dur-8:.1f}s"
+            )
+        else:
+            clip_secs = max(4, min(int(tts_dur), 8))
 
         # Choose T2V or I2V
         has_image = bool(scene.image_paths)
@@ -292,24 +308,24 @@ class VideoGenAgent(BaseAgent):
         self._log(f"Scene {scene.id}: task submitted — task_id={task_id}")
 
         # Poll
-        poll_url  = NOVITA_RESULT_URL.format(task_id=task_id)
+        poll_url  = NOVITA_RESULT_URL   # task_id passed as query param below
         deadline  = time.time() + POLL_TIMEOUT_SECS
         while time.time() < deadline:
             time.sleep(POLL_INTERVAL_SECS)
             try:
                 r = requests.get(
-                    poll_url, headers=headers, timeout=15
+                    poll_url, headers=headers,
+                    params={"task_id": task_id},  # query param not path
+                    timeout=15
                 )
                 r.raise_for_status()
                 data   = r.json()
                 status = data.get("task", {}).get("status", "")
 
                 if status == "TASK_STATUS_SUCCEED":
-                    video_url = (
-                        data.get("task", {})
-                            .get("output_videos", [{}])[0]
-                            .get("url", "")
-                    )
+                    # API returns: {"videos": [{"video_url": "..."}], "task": {...}}
+                    videos    = data.get("videos", [])
+                    video_url = videos[0].get("video_url", "") if videos else ""
                     if not video_url:
                         self._log(f"Scene {scene.id}: task succeeded but no video URL")
                         return None
@@ -341,7 +357,10 @@ class VideoGenAgent(BaseAgent):
         """Download the generated video clip."""
         out_path = os.path.join(out_dir, f"scene_{scene.id:02d}_video.mp4")
         try:
-            r = requests.get(url, headers=headers, timeout=120, stream=True)
+            # S3 pre-signed URLs embed auth in query params — sending the
+            # Novita Authorization header causes a 400 signature mismatch.
+            download_headers = {}  # no auth header for S3
+            r = requests.get(url, headers=download_headers, timeout=120, stream=True)
             r.raise_for_status()
             with open(out_path, "wb") as f:
                 for chunk in r.iter_content(chunk_size=8192):

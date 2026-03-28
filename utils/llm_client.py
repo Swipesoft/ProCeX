@@ -61,7 +61,7 @@ class LLMClient:
         user_prompt: str,
         *,
         json_mode:        bool            = False,
-        max_tokens:       int             = 8192,
+        max_tokens:       int             = 16000,
         temperature:      float           = 0.7,
         model_override:   Optional[str]   = None,   # force a specific model string
         primary_provider: Optional[str]   = None,   # "claude" | "gemini" | "openai"
@@ -76,6 +76,7 @@ class LLMClient:
         chain = self._build_provider_chain(
             primary_provider=primary_provider,
             model_override=model_override,
+            json_mode=json_mode,
         )
 
         last_error = None
@@ -97,7 +98,7 @@ class LLMClient:
         system_prompt: str,
         user_prompt: str,
         *,
-        max_tokens:       int           = 8192,
+        max_tokens:       int           = 16000,
         temperature:      float         = 0.3,
         primary_provider: Optional[str] = None,
     ) -> dict | list:
@@ -228,6 +229,7 @@ class LLMClient:
         self,
         primary_provider: Optional[str],
         model_override:   Optional[str],
+        json_mode:        bool = False,
     ) -> list[tuple[str, callable]]:
         """
         Build the ordered list of (name, callable) provider functions.
@@ -235,6 +237,7 @@ class LLMClient:
         If primary_provider is given, that provider is placed first.
         Available providers are ordered by _DEFAULT_ORDER for the remainder.
         Unavailable providers (no client / no key) are silently skipped.
+        json_mode is threaded into _call_gemini so response_mime_type is set.
         """
         # All available providers in default order
         all_providers = {

@@ -5,7 +5,7 @@ THE most important agent in the pipeline.
 
 For each scene, given the narration + word timestamps + domain skill pack,
 the VisualDirector makes THREE decisions:
-  1. visual_strategy: MANIM | IMAGE_GEN | TEXT_ANIMATION
+  1. visual_strategy: MANIM | IMAGE_GEN | VIDEO_GEN | TEXT_ANIMATION
   2. visual_prompt: detailed, ready-to-execute prompt for ManimCoder or ImageGenAgent
   3. needs_labels / label_list: if IMAGE_GEN, does it need callout labels?
 
@@ -25,7 +25,6 @@ from config import ProcExConfig, CINEMATIC_PALETTE
 from utils.llm_client import LLMClient
 from utils.timestamp_utils import timestamps_to_dict_list
 from agents.base_agent import BaseAgent
-
 
 DIRECTOR_SYSTEM = """You are a master animation director for cinematic educational videos.
 
@@ -71,7 +70,7 @@ Do not assign MANIM to scenes that are primarily about a person or place.
 TEXT_ANIMATION → DEPRECATED — do NOT use this strategy.
   TEXT_ANIMATION produces plain text slides that look unprofessional and
   frequently render as black screens. It is kept only as an internal fallback.
-  
+
   INSTEAD: For closing synthesis, opening hooks, or conceptual statements,
   use MANIM with a minimal cinematic layout:
   • 1-2 large text elements with FadeIn/Write animations
@@ -128,6 +127,28 @@ OUTPUT FORMAT: Return ONLY valid JSON array — no fences, no prose.
     "label_list": [],
     "element_count": 4,
     "zone_allocation": {"scene_title": "TITLE", "main_diagram": "MAIN"},
+    "subscenes": []
+  },
+  {
+    "scene_id": 2,
+    "visual_strategy": "VIDEO_GEN",
+    "visual_reasoning": "VOICE paragraph — Bohr speaking directly to camera. VIDEO_GEN animates the portrait into motion, giving the character speech a cinematic live quality. video_gen_enabled=true for this scene.",
+    "visual_prompt": "Niels Bohr standing at a chalkboard in 1920s Copenhagen, gesturing at quantum equations. Slow cinematic camera drift. Atmospheric lighting. Monochrome with subtle sepia.",
+    "needs_labels": false,
+    "label_list": [],
+    "element_count": 2,
+    "zone_allocation": {},
+    "subscenes": []
+  },
+  {
+    "scene_id": 3,
+    "visual_strategy": "IMAGE_GEN",
+    "visual_reasoning": "STORY paragraph about a real person in a real place — IMAGE_GEN for atmospheric historical portrait",
+    "visual_prompt": "Dramatic portrait of Lobachevsky at his desk, 1830s Russia, candlelight, geometric diagrams on paper.",
+    "needs_labels": false,
+    "label_list": [],
+    "element_count": 2,
+    "zone_allocation": {},
     "subscenes": []
   },
   {
@@ -190,8 +211,8 @@ def _build_director_prompt(state: ProcExState) -> str:
     from config import RESOLUTIONS
     from utils.spatial_grid import get_zones
 
-    skill          = state.skill_pack
-    image_enabled  = skill.get("image_gen_enabled", True)
+    skill = state.skill_pack
+    image_enabled = skill.get("image_gen_enabled", True)
 
     # Documentary override: always enable IMAGE_GEN and VIDEO_GEN for
     # documentary runs regardless of domain skill pack setting.
@@ -202,13 +223,13 @@ def _build_director_prompt(state: ProcExState) -> str:
     )
     if is_documentary_run:
         image_enabled = True
-    manim_style    = skill.get("manim_style", "")
-    image_style    = skill.get("image_gen_style", "")
+    manim_style = skill.get("manim_style", "")
+    image_style = skill.get("image_gen_style", "")
     manim_elements = skill.get("manim_elements", [])
 
-    res    = RESOLUTIONS.get(state.resolution, RESOLUTIONS["1080p"])
+    res = RESOLUTIONS.get(state.resolution, RESOLUTIONS["1080p"])
     aspect = res.aspect_ratio
-    zones  = get_zones(aspect)
+    zones = get_zones(aspect)
     zone_names = list(zones.keys())
 
     # Image generation gate — domain-level hard disable
@@ -293,18 +314,30 @@ def _build_director_prompt(state: ProcExState) -> str:
     for scene in state.scenes:
         ts_sample = timestamps_to_dict_list(scene.timestamps[:20])
         scenes_json.append({
-            "id":                     scene.id,
-            "narration_text":         scene.narration_text,
-            "duration_seconds":       round(scene.duration_seconds, 1),
-            "splittable":             scene.duration_seconds > split_threshold,
-            "initial_visual_hint":    scene.visual_prompt,
+            "id": scene.id,
+            "narration_text": scene.narration_text,
+            "duration_seconds": round(scene.duration_seconds, 1),
+            "splittable": scene.duration_seconds > split_threshold,
+            "initial_visual_hint": scene.visual_prompt,
             "word_timestamps_sample": ts_sample,
-            "paragraph_type":         getattr(scene, "paragraph_type", ""),
+            "paragraph_type": getattr(scene, "paragraph_type", ""),
             # video_gen_enabled: true when this scene is a good VIDEO_GEN candidate
             # (VOICE paragraph or cinematic opening) AND the gate is enabled
-            "video_gen_enabled":      (
-                is_documentary and novita_key_set and image_enabled and
-                getattr(scene, "paragraph_type", "") in ("VOICE", "NARRATOR")
+            # video_gen_enabled rules:
+            # Documentary: only VOICE paragraphs (first-person character speech)
+            #   → NARRATOR gets acapella + text card, not video
+            # Non-documentary: enable for first 2 scenes and any scene whose
+            #   visual_prompt/narration mentions a person or place (heuristic)
+            "video_gen_enabled": (
+                    novita_key_set and image_enabled and (
+                # Documentary: VOICE paragraphs only
+                    (is_documentary and
+                     getattr(scene, "paragraph_type", "") == "VOICE")
+                    or
+                    # Non-documentary: first 2 scenes get motion for cinematic open;
+                    # also any scene whose narration contains person/place cues
+                    (not is_documentary and novita_key_set and scene.id <= 2)
+            )
             ),
         })
 
@@ -358,7 +391,7 @@ class VisualDirector(BaseAgent):
                 raw = self.llm.complete_json(
                     DIRECTOR_SYSTEM,
                     _build_director_prompt(state),
-                    max_tokens=32768,   # raised — large scene counts need room
+                    max_tokens=32768,  # raised — large scene counts need room
                     temperature=0.4,
                     primary_provider="gemini",
                 )
@@ -368,9 +401,10 @@ class VisualDirector(BaseAgent):
 
                 # ── DIAGNOSTIC: log raw response so we can see what model actually returned ──
                 raw_str = str(raw)
-                self._log(f"Attempt {attempt+1}: raw_type={raw_type}, raw_length={len(raw_str)} chars")
-                self._log(f"Attempt {attempt+1}: raw_keys={list(raw.keys()) if isinstance(raw, dict) else 'N/A (list)'}")
-                self._log(f"Attempt {attempt+1}: raw_preview={raw_str[:500]}")
+                self._log(f"Attempt {attempt + 1}: raw_type={raw_type}, raw_length={len(raw_str)} chars")
+                self._log(
+                    f"Attempt {attempt + 1}: raw_keys={list(raw.keys()) if isinstance(raw, dict) else 'N/A (list)'}")
+                self._log(f"Attempt {attempt + 1}: raw_preview={raw_str[:500]}")
 
                 if isinstance(raw, list):
                     results = raw
@@ -378,24 +412,25 @@ class VisualDirector(BaseAgent):
                     for key in ("scenes", "scene_directions", "data", "results"):
                         if key in raw and isinstance(raw[key], list):
                             results = raw[key]
-                            self._log(f"Attempt {attempt+1}: unwrapped via key='{key}', got {len(results)} items")
+                            self._log(f"Attempt {attempt + 1}: unwrapped via key='{key}', got {len(results)} items")
                             break
                     else:
                         if "visual_strategy" in raw:
                             results = [raw]
-                            self._log(f"Attempt {attempt+1}: single scene dict wrapped as list")
+                            self._log(f"Attempt {attempt + 1}: single scene dict wrapped as list")
                         else:
-                            self._log(f"Attempt {attempt+1}: UNRECOGNISED dict structure — full keys: {list(raw.keys())}")
+                            self._log(
+                                f"Attempt {attempt + 1}: UNRECOGNISED dict structure — full keys: {list(raw.keys())}")
 
                 self._log(
-                    f"Attempt {attempt+1}: raw_type={raw_type}, "
+                    f"Attempt {attempt + 1}: raw_type={raw_type}, "
                     f"parsed {len(results)}/{n_scenes} scene direction(s)"
                 )
 
                 # Partial response detection — retry if model cut off early
                 if len(results) < n_scenes:
                     self._log(
-                        f"Attempt {attempt+1}: PARTIAL — only {len(results)} of "
+                        f"Attempt {attempt + 1}: PARTIAL — only {len(results)} of "
                         f"{n_scenes} scenes returned. Retrying..."
                     )
                     results = []
@@ -405,7 +440,7 @@ class VisualDirector(BaseAgent):
                 break
 
             except Exception as e:
-                self._log(f"Attempt {attempt+1} failed: {e}")
+                self._log(f"Attempt {attempt + 1} failed: {e}")
                 if attempt == self.cfg.max_llm_retries - 1:
                     raise
 
@@ -413,7 +448,7 @@ class VisualDirector(BaseAgent):
         if results:
             self._log(f"Response item keys: {list(results[0].keys())}")
             from collections import Counter
-            raw_strategies = [r.get("visual_strategy","?") for r in results if isinstance(r,dict)]
+            raw_strategies = [r.get("visual_strategy", "?") for r in results if isinstance(r, dict)]
             self._log(f"Raw LLM strategies: {dict(Counter(raw_strategies))}")
 
         # Build lookup — handle both "scene_id" (schema) and "id" (model sometimes echoes input key)
@@ -426,7 +461,7 @@ class VisualDirector(BaseAgent):
                 by_id[int(sid)] = r
 
         # Track which scenes have subscene splits (expanded after loop)
-        scenes_with_subscenes: list[tuple] = []   # (scene, subscene_dicts)
+        scenes_with_subscenes: list[tuple] = []  # (scene, subscene_dicts)
 
         for scene in state.scenes:
             d = by_id.get(int(scene.id))
@@ -446,7 +481,7 @@ class VisualDirector(BaseAgent):
                         f"({scene.duration_seconds:.0f}s total)"
                     )
                     scenes_with_subscenes.append((scene, subscene_list))
-                    continue   # will be expanded below; skip single-scene assignment
+                    continue  # will be expanded below; skip single-scene assignment
 
             # Single strategy assignment
             strat_str = d.get("visual_strategy", "MANIM").upper()
@@ -456,12 +491,12 @@ class VisualDirector(BaseAgent):
                 self._log(f"Unknown strategy '{strat_str}' for scene {scene.id} → MANIM")
                 scene.visual_strategy = VisualStrategy.MANIM
 
-            scene.visual_reasoning  = d.get("visual_reasoning", "")
-            scene.visual_prompt     = d.get("visual_prompt", "")
-            scene.needs_labels      = d.get("needs_labels", False)
-            scene.label_list        = d.get("label_list", [])
-            scene.element_count     = int(d.get("element_count", 0))
-            scene.zone_allocation   = d.get("zone_allocation", {})
+            scene.visual_reasoning = d.get("visual_reasoning", "")
+            scene.visual_prompt = d.get("visual_prompt", "")
+            scene.needs_labels = d.get("needs_labels", False)
+            scene.label_list = d.get("label_list", [])
+            scene.element_count = int(d.get("element_count", 0))
+            scene.zone_allocation = d.get("zone_allocation", {})
 
             self._log(
                 f"Scene {scene.id}: {scene.visual_strategy.value} | "
@@ -488,11 +523,11 @@ class VisualDirector(BaseAgent):
     # ── Critic reroute ────────────────────────────────────────────────────────
 
     def reroute_scene(
-        self,
-        scene,
-        frame_bytes: bytes,
-        aspect: str = "16:9",
-        force_split: bool = False,
+            self,
+            scene,
+            frame_bytes: bytes,
+            aspect: str = "16:9",
+            force_split: bool = False,
     ):
         """
         Called by parallel_runner when VLMCritic returns status="reroute"
@@ -510,7 +545,7 @@ class VisualDirector(BaseAgent):
         import base64
         from utils.spatial_grid import get_zones
 
-        zones     = get_zones(aspect)
+        zones = get_zones(aspect)
         zone_list = ", ".join(zones.keys())
         b64_frame = base64.b64encode(frame_bytes).decode("utf-8")
 
@@ -599,17 +634,17 @@ For PATH B:
 
         try:
             raw = self.llm.complete_vision(
-                system_prompt    = system_prompt,
-                user_prompt      = user_prompt,
-                image_bytes      = frame_bytes,
-                image_mime       = "image/jpeg",
-                max_tokens       = 16384,
-                temperature      = 0.3,
-                primary_provider = "gemini",
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                image_bytes=frame_bytes,
+                image_mime="image/jpeg",
+                max_tokens=16384,
+                temperature=0.3,
+                primary_provider="gemini",
             )
             import re, json
             raw = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
-            raw = re.sub(r"```\s*$",          "", raw.strip(), flags=re.MULTILINE)
+            raw = re.sub(r"```\s*$", "", raw.strip(), flags=re.MULTILINE)
             raw = raw.strip()
 
             # Use json-repair to handle all malformed JSON cases
@@ -618,7 +653,7 @@ For PATH B:
                 result = json.loads(repair_json(raw, ensure_ascii=False))
                 if not isinstance(result, dict):
                     raise ValueError(f"Expected dict, got {type(result).__name__}")
-                self._log(f"[reroute_scene] Scene {scene.id}: JSON parsed (path={result.get('path','?')})")
+                self._log(f"[reroute_scene] Scene {scene.id}: JSON parsed (path={result.get('path', '?')})")
             except Exception as parse_err:
                 raise ValueError(f"JSON unrecoverable: {parse_err}")
         except Exception as e:
@@ -636,23 +671,24 @@ For PATH B:
         if path == "A":
             updated = dataclasses.replace(
                 updated,
-                visual_prompt   = result.get("visual_prompt", scene.visual_prompt),
-                zone_allocation = result.get("zone_allocation", scene.zone_allocation),
-                element_count   = result.get("element_count", scene.element_count),
-                visual_reasoning= f"[rerouted] {result.get('reasoning', '')}",
+                visual_prompt=result.get("visual_prompt", scene.visual_prompt),
+                zone_allocation=result.get("zone_allocation", scene.zone_allocation),
+                element_count=result.get("element_count", scene.element_count),
+                visual_reasoning=f"[rerouted] {result.get('reasoning', '')}",
             )
             return updated
 
         else:  # PATH B — subscene split
             beats = result.get("subscenes", [])
             if not beats:
-                self._log(f"[reroute_scene] Scene {scene.id}: PATH B but no subscenes returned — falling back to PATH A no-op")
+                self._log(
+                    f"[reroute_scene] Scene {scene.id}: PATH B but no subscenes returned — falling back to PATH A no-op")
                 return scene
             # Annotate the scene with new subscene beats so _expand_subscenes
             # can inflate them in the next parallel_runner cycle
             updated = dataclasses.replace(
                 updated,
-                visual_reasoning = f"[rerouted+split] {result.get('reasoning', '')}",
+                visual_reasoning=f"[rerouted+split] {result.get('reasoning', '')}",
             )
             # Attach beats directly to scene object for the runner to expand
             object.__setattr__(updated, "_reroute_beats", beats)
@@ -661,9 +697,9 @@ For PATH B:
     # ── Subscene expansion ────────────────────────────────────────────────────
 
     def _expand_subscenes(
-        self,
-        scenes: list,
-        splits: list[tuple],
+            self,
+            scenes: list,
+            splits: list[tuple],
     ) -> list:
         """
         Replace parent scenes with their subscene beats.
@@ -693,17 +729,17 @@ For PATH B:
             #
             # Rule: sum(beat_dur) MUST equal tts_audio_total, never exceed it.
             tts_audio_total = float(getattr(parent, "tts_duration", 0.0) or 0.0)
-            total_dur       = tts_audio_total if tts_audio_total > 1.0 else parent.duration_seconds
-            all_timestamps  = list(parent.timestamps)
-            ts_count        = len(all_timestamps)
+            total_dur = tts_audio_total if tts_audio_total > 1.0 else parent.duration_seconds
+            all_timestamps = list(parent.timestamps)
+            ts_count = len(all_timestamps)
 
             # Calculate raw beat durations from fractions, then clamp:
             # 1. Apply proportional split based on duration_fraction
             # 2. Apply 5s visual minimum (lower than 10s to avoid blowing past audio)
             # 3. If the sum exceeds total_dur, scale ALL beats down proportionally
             #    so they always fit within the actual recorded audio.
-            n_beats   = len(beat_dicts)
-            raw_durs  = []
+            n_beats = len(beat_dicts)
+            raw_durs = []
             for beat in beat_dicts:
                 frac = float(beat.get("duration_fraction", 1.0 / n_beats))
                 raw_durs.append(max(round(total_dur * frac, 2), 5.0))
@@ -711,7 +747,7 @@ For PATH B:
             # Rescale if sum exceeds real audio (prevents silence at end of last beat)
             raw_sum = sum(raw_durs)
             if raw_sum > total_dur + 0.1:
-                scale  = total_dur / raw_sum
+                scale = total_dur / raw_sum
                 raw_durs = [round(d * scale, 2) for d in raw_durs]
                 # Absorb rounding remainder into last beat
                 remainder = round(total_dur - sum(raw_durs), 2)
@@ -719,7 +755,7 @@ For PATH B:
 
             # cursor tracks position within parent's duration (for timestamp slicing).
             # audio_cursor tracks absolute position in the combined audio file.
-            cursor       = 0.0
+            cursor = 0.0
             audio_cursor = float(getattr(parent, "tts_audio_start", 0.0))
 
             for i, beat in enumerate(beat_dicts):
@@ -727,8 +763,8 @@ For PATH B:
 
                 # Slice timestamps proportionally within parent's range
                 ts_start = int(cursor / total_dur * ts_count)
-                ts_end   = int((cursor + beat_dur) / total_dur * ts_count)
-                beat_ts  = all_timestamps[ts_start:ts_end]
+                ts_end = int((cursor + beat_dur) / total_dur * ts_count)
+                beat_ts = all_timestamps[ts_start:ts_end]
 
                 # Parse strategy
                 strat_str = beat.get("visual_strategy", "MANIM").upper()
@@ -739,31 +775,36 @@ For PATH B:
 
                 sub_id = parent.id * 100 + (i + 1)
                 sub = SceneClass(
-                    id               = sub_id,
-                    narration_text   = parent.narration_text,
-                    duration_seconds = beat_dur,
-                    visual_strategy  = strategy,
-                    visual_prompt    = beat.get("visual_prompt", ""),
-                    visual_reasoning = f"Subscene {i+1}/{len(beat_dicts)} of scene {parent.id}",
-                    needs_labels     = beat.get("needs_labels", False),
-                    label_list       = beat.get("label_list", []),
-                    element_count    = int(beat.get("element_count", 0)),
-                    zone_allocation  = beat.get("zone_allocation", {}),
-                    timestamps       = beat_ts,
-                    tts_audio_path   = parent.tts_audio_path,
-                    tts_duration     = beat_dur,
-                    tts_audio_start  = round(audio_cursor, 3),  # absolute offset in combined audio
-                    parent_scene_id  = parent.id,
-                    subscene_index   = i + 1,
-                    split_depth      = getattr(parent, "split_depth", 0) + 1,
+                    id=sub_id,
+                    narration_text=parent.narration_text,
+                    duration_seconds=beat_dur,
+                    visual_strategy=strategy,
+                    visual_prompt=beat.get("visual_prompt", ""),
+                    visual_reasoning=f"Subscene {i + 1}/{len(beat_dicts)} of scene {parent.id}",
+                    needs_labels=beat.get("needs_labels", False),
+                    label_list=beat.get("label_list", []),
+                    element_count=int(beat.get("element_count", 0)),
+                    zone_allocation=beat.get("zone_allocation", {}),
+                    timestamps=beat_ts,
+                    tts_audio_path=parent.tts_audio_path,
+                    tts_duration=beat_dur,
+                    tts_audio_start=round(audio_cursor, 3),  # absolute offset in combined audio
+                    parent_scene_id=parent.id,
+                    subscene_index=i + 1,
+                    split_depth=getattr(parent, "split_depth", 0) + 1,
+                    # Inherit multi-voice fields from parent — critical for documentary
+                    # scenes. A [VOICE: X] scene split into beats must keep Fenrir
+                    # on all beats, not silently revert to Aoede.
+                    tts_voice=getattr(parent, "tts_voice", ""),
+                    paragraph_type=getattr(parent, "paragraph_type", ""),
                 )
                 new_scenes.append(sub)
                 self._log(
-                    f"  Beat {i+1}/{len(beat_dicts)}: id={sub_id} "
+                    f"  Beat {i + 1}/{len(beat_dicts)}: id={sub_id} "
                     f"{strategy.value} {beat_dur:.1f}s "
                     f"audio_start={round(audio_cursor, 3)}s"
                 )
-                cursor       += beat_dur
+                cursor += beat_dur
                 audio_cursor += beat_dur
 
         return new_scenes

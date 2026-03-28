@@ -287,6 +287,12 @@ class TTSAgent(BaseAgent):
             scene.duration_seconds = chunk_duration
             scene.tts_audio_path   = chunk_path
             scene.tts_duration     = chunk_duration
+            # Record the absolute start offset of this scene within the combined
+            # audio file. This is critical: when music_mixer redirects all
+            # scene.tts_audio_path pointers to the combined music-mixed file,
+            # the assembler uses tts_audio_start to seek to the right position.
+            # Without this, every scene would play from offset 0 (scene 1 audio).
+            scene.tts_audio_start  = round(time_offset, 4)
             scene_audio_paths.append(chunk_path)
 
             relative_ts = getattr(scene, "_tts_relative_ts", [])
@@ -342,8 +348,11 @@ class TTSAgent(BaseAgent):
             self._log(f"Audio humanisation failed (non-critical): {e}")
 
         # ── Background music mixing ───────────────────────────────────────────
-        # Mix acapella/action tracks at 5% volume under the TTS narration.
-        # Skipped gracefully if songs/ directory is missing.
+        # Mix acapella/action tracks under the TTS narration.
+        # After mixing, update scene.tts_audio_path to point to the combined
+        # music-mixed file so AssemblerAgent uses it for final video sync.
+        # Without this, assembler reads per-scene files written BEFORE mixing,
+        # so music never enters the final video.
         try:
             from utils.music_mixer import mix_music_into_audio
             mix_music_into_audio(
@@ -352,6 +361,14 @@ class TTSAgent(BaseAgent):
                 output_root      = self.cfg.output_root,
                 log_fn           = self._log,
             )
+            # Redirect all scene audio paths to the music-mixed combined file.
+            # tts_audio_start carries the correct seek offset for each scene.
+            if os.path.exists(final_audio):
+                for scene in state.scenes:
+                    scene.tts_audio_path = final_audio
+                self._log(
+                    f"Scene audio paths updated to music-mixed file: {final_audio}"
+                )
         except Exception as e:
             self._log(f"Music mixing skipped (non-critical): {e}")
 

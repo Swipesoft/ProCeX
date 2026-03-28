@@ -49,6 +49,12 @@ from utils.llm_client import LLMClient
 _DONE          = object()   # sentinel — distinct from None
 _QUEUE_TIMEOUT = 0.25       # seconds to block on empty queue before re-checking
 
+# Threshold for automatic I2V upgrade of IMAGE_GEN scenes (seconds).
+# IMAGE_GEN scenes with tts_duration >= this get upgraded to:
+#   video(first 8s via Novita I2V) + ken-burns(remaining duration)
+# Set to 0 to disable. Needs NOVITA_API_KEY in .env.
+I2V_UPGRADE_THRESHOLD = 8.0
+
 
 @dataclass
 class SceneTask:
@@ -129,7 +135,8 @@ def run_tts_and_director_parallel(
         state.all_timestamps       = r.all_timestamps
         state.total_audio_duration = r.total_audio_duration
         _merge_scene_fields(state, r.scenes, [
-            "duration_seconds", "tts_audio_path", "tts_duration", "timestamps",
+            "duration_seconds", "tts_audio_path", "tts_duration",
+            "tts_audio_start", "timestamps",
         ])
 
     # ── Merge VisualDirector results onto original state ──────────────────
@@ -151,7 +158,20 @@ def run_tts_and_director_parallel(
                 tts_src = tts_by_id.get(tts_source_id)
                 if tts_src:
                     scene.tts_audio_path = tts_src.tts_audio_path
-                    scene.tts_duration   = scene.duration_seconds  # proportional slice
+                    if scene.parent_scene_id:
+                        # Subscene beat: tts_duration is the proportional slice of
+                        # the parent's ACTUAL recorded audio (not LLM estimate).
+                        # scene.duration_seconds here is the beat's fraction of the
+                        # parent duration_seconds (LLM estimate) — NOT the actual audio.
+                        # Use tts_duration already set by _expand_subscenes if available,
+                        # else fall back to scene.duration_seconds.
+                        if not scene.tts_duration or scene.tts_duration <= 0:
+                            scene.tts_duration = scene.duration_seconds
+                    else:
+                        # Original non-split scene: preserve the actual TTS duration
+                        # recorded by TTSAgent. NEVER overwrite with LLM estimate.
+                        scene.tts_duration    = tts_src.tts_duration
+                        scene.tts_audio_start = getattr(tts_src, "tts_audio_start", 0.0)
                     # Timestamps already sliced by _expand_subscenes
 
             state.scenes = dir_scenes
@@ -217,7 +237,62 @@ def run_generation_render_pipeline(
     videogen = VideoGenAgent(cfg, llm)
     state    = VideoGenAgent.enforce_budget(state)
 
-    # Classify scenes by their initial strategy
+    # ── Post-planning VIDEO_GEN promotion ─────────────────────────────────
+    # If VisualDirector assigned zero VIDEO_GEN scenes (common when running
+    # non-documentary or when director prompt didn't trigger it), promote a
+    # subset of IMAGE_GEN scenes to VIDEO_GEN as a fallback to ensure the
+    # video has some live motion. Also handles MANIM fallback scenes.
+    #
+    # Rules:
+    #  - Only promote when NOVITA_API_KEY is set
+    #  - Target ~10-20% of total scenes for VIDEO_GEN (budget = 16s/60s)
+    #  - Only promote IMAGE_GEN scenes with tts_duration <= 8s (Seedance max)
+    #  - For IMAGE_GEN scenes > 8s: skip (don't split here, director handles splits)
+    #  - When promoting from MANIM fallback (critic rerouted to IMAGE_GEN),
+    #    same 8s constraint applies
+    #  - VIDEO_GEN from this fallback path ignores the 16s/60s budget constraint
+    #    (budget enforcement is for director-planned VIDEO_GEN only)
+    import os as _os
+    novita_key = bool(_os.environ.get("NOVITA_API_KEY", ""))
+    video_scenes_planned = [s for s in state.scenes if s.visual_strategy ==
+                             VisualStrategy.VIDEO_GEN]
+
+    if novita_key and not video_scenes_planned:
+        # How many VIDEO_GEN scenes to target: ~15% of total, min 1 max 6
+        n_total   = len(state.scenes)
+        n_target  = max(1, min(6, int(n_total * 0.15)))
+        promoted  = 0
+        budget_s  = 0.0
+        max_budget = state.target_duration_minutes * 60.0 * (16 / 60)
+
+        # Prefer IMAGE_GEN scenes that are short enough for the video model
+        # and are visually interesting (persons/places — non-TECHNICAL)
+        candidates = [
+            s for s in state.scenes
+            if s.visual_strategy == VisualStrategy.IMAGE_GEN
+            and (getattr(s, "tts_duration", 0.0) or s.duration_seconds) <= 8.0
+            and getattr(s, "paragraph_type", "") not in ("TECHNICAL",)
+        ]
+        # Sort by scene position — promote middle scenes for pacing
+        mid = n_total // 2
+        candidates.sort(key=lambda s: abs(s.id - mid))
+
+        for scene in candidates:
+            dur = getattr(scene, "tts_duration", 0.0) or scene.duration_seconds
+            if promoted >= n_target or budget_s + dur > max_budget * 1.5:
+                break
+            scene.visual_strategy = VisualStrategy.VIDEO_GEN
+            budget_s += dur
+            promoted += 1
+
+        if promoted:
+            print(
+                f"[Parallel] Post-planning VIDEO_GEN promotion: "
+                f"{promoted} IMAGE_GEN scenes → VIDEO_GEN "
+                f"(budget used: {budget_s:.0f}s)"
+            )
+
+    # Classify scenes by their final strategy
     manim_scenes  = [s for s in state.scenes if s.visual_strategy in
                      (VisualStrategy.MANIM, VisualStrategy.TEXT_ANIMATION)]
     image_scenes  = [s for s in state.scenes if s.visual_strategy in
@@ -348,12 +423,97 @@ def run_generation_render_pipeline(
             code_queue.put(SceneTask(scene=scene))
             return
 
-        # IMAGE_GEN success → render directly
+        # IMAGE_GEN success → try silent I2V upgrade, else normal render
         if scene.visual_strategy == VisualStrategy.IMAGE_GEN:
-            log(f"Image-{wid}: Scene {scene.id} IMAGE_GEN → render queue")
-            render_queue.put(SceneTask(scene=scene))
+            combined = _try_i2v_upgrade(scene)
+            if combined:
+                scene.clip_path = combined
+                mark_done(scene, combined)
+            else:
+                log(f"Image-{wid}: Scene {scene.id} IMAGE_GEN → render queue")
+                render_queue.put(SceneTask(scene=scene))
 
         # IMAGE_MANIM_HYBRID retired — IMAGE_GEN handles all annotations
+
+    # ── I2V upgrade helper ────────────────────────────────────────────────
+    # Silently upgrades long IMAGE_GEN scenes: generates an I2V video for the
+    # first 8s then appends ken-burns for the remainder. VisualDirector never
+    # knows — it still plans IMAGE_GEN. Assembler sees one clip per scene.
+
+    def _try_i2v_upgrade(scene: Scene):
+        import subprocess as _sp, tempfile as _tf, shutil as _sh, os as _os
+        from utils.ken_burns import image_to_video_clip, cycle_effect
+
+        tts_dur = getattr(scene, "tts_duration", 0.0) or scene.duration_seconds
+        if tts_dur < I2V_UPGRADE_THRESHOLD:
+            return None
+        novita_key = _os.environ.get("NOVITA_API_KEY", "")
+        if not novita_key:
+            return None
+        if not scene.image_paths or not _os.path.exists(scene.image_paths[0]):
+            return None
+
+        video_secs = min(8, int(tts_dur))
+        image_secs = round(tts_dur - video_secs, 3)
+        log(f"Image: Scene {scene.id} I2V upgrade "
+            f"({video_secs}s live + {image_secs:.1f}s still, total {tts_dur:.1f}s)")
+
+        # Step 1: I2V clip
+        try:
+            video_clip = videogen.generate_for_scene(
+                scene=scene, resolution=state.resolution, videos_dir=cfg.dirs["videos"]
+            )
+        except Exception as e:
+            log(f"Image: Scene {scene.id} I2V failed ({e}) — keeping ken-burns")
+            return None
+        if not video_clip or not _os.path.exists(video_clip):
+            log(f"Image: Scene {scene.id} I2V returned no clip — keeping ken-burns")
+            return None
+
+        combined = _os.path.join(cfg.dirs["scenes"], f"scene_{scene.id:02d}.mp4")
+
+        if image_secs < 0.5:
+            _sh.copy2(video_clip, combined)
+            log(f"Image: Scene {scene.id} I2V upgrade ✓ (video only)")
+            return combined
+
+        # Step 2: ken-burns tail
+        kb_path = _os.path.join(cfg.dirs["scenes"], f"scene_{scene.id:02d}_kbtail.mp4")
+        try:
+            image_to_video_clip(
+                image_path=scene.image_paths[0], duration=image_secs,
+                output_path=kb_path, resolution=state.resolution,
+                effect=cycle_effect(scene.id + 1),
+            )
+        except Exception as e:
+            log(f"Image: Scene {scene.id} ken-burns tail failed ({e}) — video only")
+            _sh.copy2(video_clip, combined)
+            return combined
+
+        # Step 3: concat
+        with _tf.NamedTemporaryFile(mode="w", suffix=".txt", delete=False,
+                                    encoding="utf-8") as f:
+            f.write(f"file '{_os.path.abspath(video_clip)}'\n")
+            f.write(f"file '{_os.path.abspath(kb_path)}'\n")
+            list_path = f.name
+        try:
+            r = _sp.run([
+                "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path,
+                "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                "-pix_fmt", "yuv420p", "-an", combined,
+            ], capture_output=True, text=True, timeout=120)
+            _os.unlink(list_path)
+            if r.returncode != 0:
+                raise RuntimeError(r.stderr[-300:])
+        except Exception as e:
+            try: _os.unlink(list_path)
+            except Exception: pass
+            log(f"Image: Scene {scene.id} concat failed ({e}) — video only")
+            _sh.copy2(video_clip, combined)
+            return combined
+
+        log(f"Image: Scene {scene.id} I2V upgrade ✓ → {combined}")
+        return combined
 
     # ── Video gen worker ──────────────────────────────────────────────────
     # Runs in a daemon thread per scene — polls Novita until done or timeout.
@@ -508,15 +668,29 @@ def run_generation_render_pipeline(
                     f"Renderer-{wid}: Scene {scene.id} — depth limit reached, "
                     f"converting to ImageGen fallback"
                 )
+                # Cycle-breaker: if visual_strategy is already TEXT_ANIMATION,
+                # IMAGE_GEN already failed previously for this scene. Do NOT
+                # dispatch to image_worker again — that creates an infinite
+                # loop: TEXT_ANIMATION → VLMCritic → imagegen_fallback →
+                # IMAGE_GEN fails → TEXT_ANIMATION → VLMCritic → ... forever.
+                # Instead accept the TEXT_ANIMATION clip as-is.
+                if scene.visual_strategy == VisualStrategy.TEXT_ANIMATION:
+                    log(
+                        f"Renderer-{wid}: Scene {scene.id} — IMAGE_GEN already failed, "
+                        f"accepting TEXT_ANIMATION as final fallback"
+                    )
+                    mark_done(scene, clip_path)
+                    continue
+
                 try:
                     from agents.image_reprompter import ImageReprompter
 
-                    # Bug fix 1: clear stale Manim clip_path so the old
-                    # failed render is never assembled into the final video.
+                    # Clear stale Manim clip_path so the old failed render is
+                    # never assembled into the final video.
                     scene.clip_path = ""
 
-                    # Bug fix 2: use tts_duration as the authoritative clip
-                    # length for ken-burns so ImageGen clips match audio exactly.
+                    # Use tts_duration as the authoritative clip length for
+                    # ken-burns so ImageGen clips match audio exactly.
                     if scene.tts_duration and scene.tts_duration > 0:
                         scene.duration_seconds = scene.tts_duration
 

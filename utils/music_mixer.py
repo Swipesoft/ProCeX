@@ -39,6 +39,9 @@ import tempfile
 from typing import Optional
 
 # Volume ratio: TTS voice dominates, music is subtle background texture
+# These are RELATIVE weights passed to amix — treated as a ratio (not gain).
+# With normalize=1, amix auto-levels the output to prevent clipping while
+# keeping the ratio. 85:15 gives clearly audible background music.
 VOICE_VOL  = 0.95
 MUSIC_VOL  = 0.05
 
@@ -49,7 +52,13 @@ TRACK_TRIM = 5.0
 MAX_GROUP_DUR = 115.0   # slightly under 120s so we never exceed a track
 
 # Paragraph types that map to each music category
-ACAPELLA_TYPES = {"NARRATOR", ""}   # empty = non-documentary scene
+# Paragraph types → music category mapping
+# NARRATOR and empty (non-documentary) → acapella by default for SHORT scenes
+# All others → action (energetic, allegro)
+# For non-documentary runs where all paragraph_types are empty, we use
+# narration_text heuristics to decide — history/drama/science = action,
+# very short bridge scenes = acapella
+ACAPELLA_TYPES = {"NARRATOR"}      # only pure narrator bridges get acapella
 ACTION_TYPES   = {"TECHNICAL", "STORY", "VOICE"}
 
 
@@ -112,12 +121,36 @@ def _probe_duration(path: str) -> float:
 def _music_category(scenes: list) -> str:
     """
     Determine music category for a group of scenes.
-    Any TECHNICAL or VOICE scene → action. Otherwise acapella.
+
+    Documentary scenes:
+      TECHNICAL / STORY / VOICE → action_tracks
+      NARRATOR only             → acapella_tracks
+
+    Non-documentary scenes (paragraph_type=""):
+      Default to action_tracks — most topics (history, science, drama)
+      benefit from energetic backing.
+      Exception: groups of very short scenes (<= 15s total) get acapella
+      (these are typically bridge/intro moments).
     """
+    has_action_type = False
+    all_empty       = True
+    total_dur       = 0.0
+
     for s in scenes:
         pt = getattr(s, "paragraph_type", "") or ""
+        if pt:
+            all_empty = False
         if pt in ACTION_TYPES:
-            return "action"
+            has_action_type = True
+        total_dur += getattr(s, "tts_duration", 0.0) or getattr(s, "duration_seconds", 0.0)
+
+    if has_action_type:
+        return "action"
+
+    # Non-documentary: default action unless very short bridge group
+    if all_empty:
+        return "acapella" if total_dur <= 15.0 else "action"
+
     return "acapella"
 
 
@@ -154,10 +187,12 @@ def _mix_group(
         "-i", tts_segment_path,
         "-ss", f"{trim_start:.2f}", "-i", track_path,
         "-filter_complex",
-        f"[0:a]volume={VOICE_VOL}[v];[1:a]volume={MUSIC_VOL}[m];"
-        f"[v][m]amix=inputs=2:duration=first:dropout_transition=2[out]",
+        # normalize=1 makes amix treat weights as relative ratios and auto-levels
+        # the output, preventing the combined signal from clipping while still
+        # honouring the weight ratio. weights="17 3" = 85%/15% relative split.
+        f"[0:a][1:a]amix=inputs=2:weights={int(VOICE_VOL*100)} {int(MUSIC_VOL*100)}:normalize=1:duration=first:dropout_transition=2[out]",
         "-map", "[out]",
-        "-c:a", "aac", "-b:a", "192k",
+        "-c:a", "libmp3lame", "-q:a", "2",   # mp3 codec for mp3 container
         "-t", f"{group_duration:.3f}",
         out_path,
     ]
@@ -268,13 +303,13 @@ def mix_music_into_audio(
 
     for g_idx, (group_scenes, group_dur, category) in enumerate(groups):
         # Slice this group's audio from the combined TTS file
-        group_raw = os.path.join(audio_dir, f"_group_{g_idx:03d}_raw.m4a")
+        group_raw = os.path.join(audio_dir, f"_group_{g_idx:03d}_raw.mp3")
         slice_cmd = [
             "ffmpeg", "-y",
             "-ss", f"{group_offset:.3f}",
             "-i", final_audio_path,
             "-t",  f"{group_dur:.3f}",
-            "-c:a", "aac", "-b:a", "192k",   # re-encode: MP3 copy-slice unreliable
+            "-c:a", "libmp3lame", "-q:a", "2",   # re-encode: MP3 copy-slice unreliable
             group_raw,
         ]
         r = subprocess.run(slice_cmd, capture_output=True, text=True, timeout=60)
@@ -329,8 +364,7 @@ def mix_music_into_audio(
     # This prevents 0 KB debris files accumulating in the audio directory
     import glob
     audio_dir_cleanup = os.path.join(output_root, "audio")
-    for pattern in ["_group_*_raw.m4a", "_group_*_raw.mp3",
-                    "_group_*_mixed.mp3", "_group_*_mixed.m4a"]:
+    for pattern in ["_group_*_raw.mp3", "_group_*_mixed.mp3"]:
         for f in glob.glob(os.path.join(audio_dir_cleanup, pattern)):
             try:
                 os.remove(f)

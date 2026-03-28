@@ -90,8 +90,13 @@ class ImageGenAgent(BaseAgent):
         # ── Extract and save image ───────────────────────────────────────
         image_path = os.path.join(images_dir, f"scene_{scene.id:02d}_raw.png")
 
+        # Guard: response.parts is None when Gemini returns empty candidates
+        # (rate limit, safety filter, model error). Iterating None raises
+        # 'NoneType' object is not iterable — catch this explicitly.
+        parts = response.parts or []
+
         saved = False
-        for part in response.parts:
+        for part in parts:
             if hasattr(part, "inline_data") and part.inline_data is not None:
                 img_bytes = part.inline_data.data
                 if isinstance(img_bytes, str):
@@ -105,7 +110,7 @@ class ImageGenAgent(BaseAgent):
             # Try as_image() API
             try:
                 from PIL import Image
-                for part in response.parts:
+                for part in parts:
                     if hasattr(part, "as_image"):
                         img = part.as_image()
                         img.save(image_path)
@@ -115,7 +120,16 @@ class ImageGenAgent(BaseAgent):
                 pass
 
         if not saved:
-            raise RuntimeError(f"NanoBanana returned no image data for scene {scene.id}")
+            # Log finish_reason if available to help diagnose why parts is empty
+            finish = ""
+            try:
+                finish = str(response.candidates[0].finish_reason) if response.candidates else "no candidates"
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"NanoBanana returned no image data for scene {scene.id}"
+                + (f" (finish_reason={finish})" if finish else "")
+            )
 
         self._log(f"Scene {scene.id}: image saved → {image_path}")
 

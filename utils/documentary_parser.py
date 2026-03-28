@@ -29,10 +29,10 @@ Paragraph type → TTS voice mapping:
   NARRATOR  → tts_voice = ""          (Aoede, global default)
   STORY     → tts_voice = ""          (Aoede, global default)
   TECHNICAL → tts_voice = ""          (Aoede, global default)
-  VOICE: X  → tts_voice = "Charon"   (male Gemini voice for critics/characters)
+  VOICE: X  → tts_voice = "Fenrir"   (male Gemini voice for critics/characters)
 
-Why Charon for VOICE paragraphs? Charon is one of Gemini's prebuilt male
-voices, providing clear contrast with Aoede's female narrator voice.
+Why Fenrir for VOICE paragraphs? Fenrir is one of Gemini's prebuilt male
+voices with a notably deeper register, providing clear contrast with Aoede.
 The config.py DOCUMENTARY_VOICE_MAP can override this per character name
 if different voices are wanted for different historical figures.
 
@@ -58,7 +58,7 @@ DOCUMENTARY_VOICE_DEFAULT = os.environ.get("GEMINI_TTS_VOICE_MALE", "Fenrir")
 # Optional per-character overrides — extend as needed
 # Any character not listed here gets DOCUMENTARY_VOICE_DEFAULT
 DOCUMENTARY_VOICE_MAP: dict[str, str] = {
-    # "Einstein":    "Charon",
+    # "Einstein":    "Fenrir",
     # "Bohr":        "Fenrir",
     # "Lobachevsky": "Orus",
 }
@@ -92,7 +92,7 @@ def parse_documentary_scenes(
     Each ▸ LABEL block becomes one Scene with:
       - narration_text   = the paragraph text (tag stripped)
       - paragraph_type   = NARRATOR | STORY | TECHNICAL | VOICE
-      - tts_voice        = "" for narration types, "Charon" for VOICE
+      - tts_voice        = "" for narration types, "Fenrir" for VOICE
       - duration_seconds = estimated from word count
       - visual_prompt    = auto-generated hint based on paragraph_type
 
