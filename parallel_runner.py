@@ -55,6 +55,12 @@ _QUEUE_TIMEOUT = 0.25       # seconds to block on empty queue before re-checking
 # Set to 0 to disable. Needs NOVITA_API_KEY in .env.
 I2V_UPGRADE_THRESHOLD = 8.0
 
+# Maximum number of image/video scenes processed concurrently.
+# Each image scene fires up to 3 parallel Novita I2V calls.
+# 3 scenes × 3 I2V calls = 9 concurrent connections → SSL pool exhaustion.
+# Capping at 3 scenes in flight limits peak Novita concurrency to a safe level.
+SCENE_CONCURRENCY_LIMIT = 3
+
 
 @dataclass
 class SceneTask:
@@ -174,6 +180,27 @@ def run_tts_and_director_parallel(
                         scene.tts_audio_start = getattr(tts_src, "tts_audio_start", 0.0)
                     # Timestamps already sliced by _expand_subscenes
 
+            # ── Fix subscene beat tts_audio_start offsets ────────────────────
+            # _expand_subscenes computed beat starts RELATIVE to the parent's
+            # tts_audio_start, which was 0.0 during the parallel stage
+            # (TTSAgent hadn't set absolute offsets yet).
+            # Now that we have actual parent starts from TTSAgent, convert each
+            # subscene's relative offset → absolute position in combined audio.
+            #
+            # Example: Scene 2 starts at 27.0s in combined audio.
+            #   Beat 1 computed relative start = 0.0s  → fixed = 27.0s ✓
+            #   Beat 2 computed relative start = 16.2s → fixed = 43.2s ✓
+            #   Beat 3 computed relative start = 32.4s → fixed = 59.4s ✓
+            for scene in dir_scenes:
+                if scene.parent_scene_id:
+                    parent_src = tts_by_id.get(scene.parent_scene_id)
+                    if parent_src:
+                        parent_abs = getattr(parent_src, "tts_audio_start", 0.0)
+                        if parent_abs > 0.0:
+                            scene.tts_audio_start = round(
+                                scene.tts_audio_start + parent_abs, 4
+                            )
+
             state.scenes = dir_scenes
             print(f"[Parallel] VisualDirector expanded {len(tts_by_id)} → "
                   f"{len(dir_scenes)} scenes (subscene beats)")
@@ -292,7 +319,40 @@ def run_generation_render_pipeline(
                 f"(budget used: {budget_s:.0f}s)"
             )
 
-    # Classify scenes by their final strategy
+
+
+    # ── Queues ────────────────────────────────────────────────────────────
+    code_queue   = Queue()   # SceneTask → coder workers
+    render_queue = Queue()   # SceneTask → renderer workers
+    results      = {}        # scene.id → clip_path  (written once per scene)
+    done_count   = [0]
+    done_scenes  = {}       # id → Scene, tracks ALL scenes including reroute subscenes
+    done_lock    = threading.Lock()
+
+    def log(msg: str):
+        print(f"[Parallel] {msg}")
+
+
+    # ── Silent VIDEO_GEN → IMAGE_GEN downgrade for long scenes ─────────────
+    # A VIDEO_GEN scene only has 8s of live video; the rest is a frozen frame.
+    # For scenes > 12s that is an unacceptable ratio (e.g. 30s = 73% frozen).
+    # Downgrade them to IMAGE_GEN so _try_i2v_upgrade handles them with
+    # multiple 8s beats — same convention as IMAGE_GEN → video upgrade.
+    VIDEO_GEN_MAX_DURATION = 12.0
+    downgraded_count = 0
+    for _s in state.scenes:
+        if _s.visual_strategy == VisualStrategy.VIDEO_GEN:
+            _dur = getattr(_s, "tts_duration", 0.0) or _s.duration_seconds
+            if _dur > VIDEO_GEN_MAX_DURATION:
+                _s.visual_strategy = VisualStrategy.IMAGE_GEN
+                downgraded_count += 1
+                log(f"Scene {_s.id} VIDEO_GEN → IMAGE_GEN "
+                    f"({_dur:.1f}s > {VIDEO_GEN_MAX_DURATION}s, multi-beat I2V takes over)")
+    if downgraded_count:
+        print(f"[Parallel] {downgraded_count} VIDEO_GEN scene(s) silently converted "
+              f"to IMAGE_GEN (tts_duration > {VIDEO_GEN_MAX_DURATION}s)")
+
+    # Classify scenes by their final strategy (AFTER downgrade so strategies are final)
     manim_scenes  = [s for s in state.scenes if s.visual_strategy in
                      (VisualStrategy.MANIM, VisualStrategy.TEXT_ANIMATION)]
     image_scenes  = [s for s in state.scenes if s.visual_strategy in
@@ -305,17 +365,6 @@ def run_generation_render_pipeline(
         f"[Parallel] Stage B: {len(manim_scenes)} Manim, "
         f"{len(image_scenes)} image, {len(video_scenes)} video scenes"
     )
-
-    # ── Queues ────────────────────────────────────────────────────────────
-    code_queue   = Queue()   # SceneTask → coder workers
-    render_queue = Queue()   # SceneTask → renderer workers
-    results      = {}        # scene.id → clip_path  (written once per scene)
-    done_count   = [0]
-    done_scenes  = {}       # id → Scene, tracks ALL scenes including reroute subscenes
-    done_lock    = threading.Lock()
-
-    def log(msg: str):
-        print(f"[Parallel] {msg}")
 
     def mark_done(scene: Scene, clip_path: str | None):
         """Record a scene as finished (success or fallback). Thread-safe."""
@@ -382,6 +431,10 @@ def run_generation_render_pipeline(
 
     # ── Image worker ──────────────────────────────────────────────────────
 
+    # Semaphore limiting concurrent API-heavy scenes (image + video).
+    # Prevents Novita SSL pool exhaustion when many scenes fire I2V in parallel.
+    _api_scene_sem = threading.Semaphore(SCENE_CONCURRENCY_LIMIT)
+
     def image_worker(wid: int, scene: Scene):
         """
         Generate image for one IMAGE_GEN or HYBRID scene.
@@ -392,7 +445,9 @@ def run_generation_render_pipeline(
             to code_queue) rather than sending empty scene to render_queue
           - HYBRID scenes always route to code_queue after image gen (Problem 4)
         """
-        log(f"Image-{wid}: Scene {scene.id} ({scene.visual_strategy.value}) generating...")
+        _api_scene_sem.acquire()
+        log(f"Image-{wid}: Scene {scene.id} ({scene.visual_strategy.value}) generating..."
+            f" [slot acquired, {SCENE_CONCURRENCY_LIMIT} max concurrent]")
 
         succeeded = False
         last_err  = ""
@@ -420,6 +475,8 @@ def run_generation_render_pipeline(
                 f"attempts ({last_err}) — degraded to TEXT_ANIMATION"
             )
             # Route to coder for a text animation fallback
+            _api_scene_sem.release()
+            log(f"Image-{wid}: Scene {scene.id} slot released (TEXT_ANIMATION degradation)")
             code_queue.put(SceneTask(scene=scene))
             return
 
@@ -428,9 +485,12 @@ def run_generation_render_pipeline(
             combined = _try_i2v_upgrade(scene)
             if combined:
                 scene.clip_path = combined
+                _api_scene_sem.release()
+                log(f"Image-{wid}: Scene {scene.id} slot released (I2V upgrade done)")
                 mark_done(scene, combined)
             else:
-                log(f"Image-{wid}: Scene {scene.id} IMAGE_GEN → render queue")
+                _api_scene_sem.release()
+                log(f"Image-{wid}: Scene {scene.id} slot released (→ render queue)")
                 render_queue.put(SceneTask(scene=scene))
 
         # IMAGE_MANIM_HYBRID retired — IMAGE_GEN handles all annotations
@@ -535,12 +595,36 @@ def run_generation_render_pipeline(
             beats_raw.append(dict(beats_raw[-1]))  # pad with copy of last
 
         # ── Step 3: LLM generates image+motion prompt for each beat ──────
+        # Detect if this scene features historical figures — VOICE and STORY
+        # paragraph types typically describe real people (Einstein, Bohr, etc.)
+        # For these, enforce Ghibli aesthetic: avoids AI face hallucination,
+        # produces captivating painterly portraits instead of photorealistic slop.
+        _para_type    = getattr(scene, "paragraph_type", "") or ""
+        _is_figure_scene = _para_type in ("VOICE", "STORY")
+
+        if _is_figure_scene:
+            _style_rule = (
+                "CRITICAL STYLE: Studio Ghibli aesthetic is MANDATORY for this scene. "
+                "The scene features a historical figure. Do NOT attempt photorealism — "
+                "paint them in Ghibli's signature style: soft warm outlines, atmospheric "
+                "watercolour backgrounds, expressive eyes, era-appropriate clothing with "
+                "hand-painted texture. The figure should feel alive and emotionally present "
+                "without needing to be a photographic likeness. Think Miyazaki's 'The Wind "
+                "Rises' — painterly, cinematic, deeply human. No text. No watermarks. "
+                "No modern elements."
+            )
+        else:
+            _style_rule = (
+                "Style: Studio Ghibli aesthetic — painterly, atmospheric depth, "
+                "soft diffused light, emotionally resonant framing, rich background "
+                "detail. No text or watermarks."
+            )
+
         BEAT_SYSTEM = (
             "You are a Ghibli-style visual director. Given a narration beat and its "
             "parent visual context, produce a JSON object with exactly two keys:\n"
-            "  \"image_prompt\": a 60-120 word painterly image prompt in Studio Ghibli "
-            "aesthetic — atmospheric depth, soft diffused light, emotionally resonant "
-            "framing, rich background detail, no text or watermarks.\n"
+            "  \"image_prompt\": a 60-120 word painterly image prompt. "
+            + _style_rule + "\n"
             "  \"motion_hint\": a 10-20 word I2V camera/motion directive that matches "
             "the emotional beat (e.g. \"slow push-in on the figure\", "
             "\"gentle rack focus from background to foreground\", "
@@ -615,19 +699,31 @@ def run_generation_render_pipeline(
             return None
 
         # ── Determine number of beats ─────────────────────────────────────
-        # n = floor(tts_dur / 5), capped at 3, minimum 2.
-        # Each beat needs >= 4s for I2V API minimum.
-        n_beats = min(3, max(2, int(tts_dur // 5)))
-        beat_dur = tts_dur / n_beats
-        if beat_dur < 4.0:
-            n_beats = max(1, int(tts_dur // 4))
+        # New formula: keep adding 8s beats until the whole duration is covered.
+        # Each beat is 8s (API max) except the last which takes the remainder.
+        # If remainder < 4s (API minimum) → that last beat uses ken-burns instead.
+        # This eliminates freeze-extend entirely for long scenes.
+        #
+        # Examples:
+        #   30s → ceil(30/8)=4 beats: [8s, 8s, 8s, 6s]  → 0s frozen
+        #   33s → ceil(33/8)=5 beats: [8s, 8s, 8s, 8s, 1s<4→ken-burns]
+        #   15s → ceil(15/8)=2 beats: [8s, 7s]           → 0s frozen
+        #    9s → ceil(9/8) =2 beats: [8s, 1s<4→ken-burns]
+        BEAT_CLIP_SECS = 8    # max I2V clip length
+        MIN_I2V_SECS   = 4    # I2V API minimum duration
 
-        # Single beat: fall through to original simple I2V (no multi-image overhead)
-        if n_beats == 1:
-            n_beats = 1   # handled below in legacy path
+        import math as _math
+        n_beats   = max(1, _math.ceil(tts_dur / BEAT_CLIP_SECS))
+        remainder = tts_dur - (n_beats - 1) * BEAT_CLIP_SECS
+        # If remainder is too short for I2V, the last beat uses ken-burns
+        last_beat_is_kb = (n_beats > 1 and remainder < MIN_I2V_SECS)
+        # How many beats are actual I2V (remainder may be ken-burns)
+        n_i2v_beats = n_beats - 1 if last_beat_is_kb else n_beats
 
-        log(f"Image: Scene {scene.id} multi-beat I2V: {n_beats} beats × "
-            f"~{tts_dur/n_beats:.1f}s each (total {tts_dur:.1f}s)")
+        log(f"Image: Scene {scene.id} multi-beat I2V: {n_beats} beats "
+            f"({n_i2v_beats} I2V + "
+            f"{'1 ken-burns' if last_beat_is_kb else '0 ken-burns'}) "
+            f"covering {tts_dur:.1f}s total")
 
         combined_path = _os.path.join(
             cfg.dirs["scenes"], f"scene_{scene.id:02d}.mp4"
@@ -635,7 +731,17 @@ def run_generation_render_pipeline(
         images_dir = cfg.dirs["images"]
         videos_dir = cfg.dirs["videos"]
 
-        # ── Step 1: Generate beat prompts ─────────────────────────────────
+        # ── Step 1: Compute per-beat durations ────────────────────────────
+        # Build the duration list before generating prompts so each beat's
+        # narration slice is proportional to its actual clip duration.
+        beat_durations = []
+        for _bi in range(n_beats):
+            if _bi < n_beats - 1:
+                beat_durations.append(float(BEAT_CLIP_SECS))
+            else:
+                beat_durations.append(round(remainder, 3))
+
+        # ── Step 1b: Generate beat prompts ────────────────────────────────
         MAX_BEATS_RETRIES = 3
         try:
             beats = _generate_beat_prompts(scene, n_beats)
@@ -648,6 +754,10 @@ def run_generation_render_pipeline(
             # Graceful fallback: single I2V of original image (original behaviour)
             return _single_i2v_fallback(scene, tts_dur, combined_path,
                                         videos_dir, images_dir, _sp, _tf, _sh, _os)
+
+        # Override durations from prompt generator with our precise durations
+        for _bi, _beat in enumerate(beats):
+            _beat["duration"] = beat_durations[_bi]
 
         # ── Step 2: Generate one image per beat (parallel) ────────────────
         # Create a lightweight scene clone per beat to avoid mutating the original.
@@ -847,15 +957,19 @@ def run_generation_render_pipeline(
             log(f"Image: Scene {scene.id} beat {beat_idx+1} timed out")
             return None
 
-        with _TPE(max_workers=min(n_beats, 3)) as pool:
-            futs = {pool.submit(_gen_beat_clip, i, beats[i], beat_image_paths[i]): i
-                    for i in range(n_beats)}
-            for fut in _ac(futs):
-                idx = futs[fut]
-                try:
-                    beat_clips[idx] = fut.result()
-                except Exception as e:
-                    log(f"Image: Scene {scene.id} beat {idx+1} clip future: {e}")
+        # Submit I2V for all beats except the last one when it's a ken-burns beat
+        i2v_beat_indices = list(range(n_i2v_beats))  # 0..n_i2v_beats-1
+        if i2v_beat_indices:
+            with _TPE(max_workers=min(len(i2v_beat_indices), 3)) as pool:
+                futs = {pool.submit(_gen_beat_clip, i, beats[i], beat_image_paths[i]): i
+                        for i in i2v_beat_indices}
+                for fut in _ac(futs):
+                    idx = futs[fut]
+                    try:
+                        beat_clips[idx] = fut.result()
+                    except Exception as e:
+                        log(f"Image: Scene {scene.id} beat {idx+1} clip future: {e}")
+        # The last beat is already None in beat_clips — Step 4 will fill it with ken-burns
 
         # ── Step 4: Fill failed clips with ken-burns fallback ─────────────
         for i in range(n_beats):
@@ -980,7 +1094,9 @@ def run_generation_render_pipeline(
 
     def video_worker(scene: Scene):
         """Generate one VIDEO_GEN scene via Novita Seedance 1.5 Pro."""
-        log(f"Video: Scene {scene.id} VIDEO_GEN generating...")
+        _api_scene_sem.acquire()
+        log(f"Video: Scene {scene.id} VIDEO_GEN generating..."
+            f" [slot acquired, {SCENE_CONCURRENCY_LIMIT} max concurrent]")
         videos_dir = cfg.dirs["videos"]
         try:
             clip_path = videogen.generate_for_scene(
@@ -996,10 +1112,14 @@ def run_generation_render_pipeline(
             scene.clip_path  = clip_path
             scene.video_path = clip_path
             log(f"Video: Scene {scene.id} ✓ → {os.path.basename(clip_path)}")
+            _api_scene_sem.release()
+            log(f"Video: Scene {scene.id} slot released")
             mark_done(scene, clip_path)
         else:
             # Degrade to IMAGE_GEN — dispatch to image_worker
             log(f"Video: Scene {scene.id} failed — degrading to IMAGE_GEN")
+            _api_scene_sem.release()   # release before image_worker re-acquires
+            log(f"Video: Scene {scene.id} slot released (before IMAGE_GEN fallback)")
             scene.visual_strategy = VisualStrategy.IMAGE_GEN
             with done_lock:
                 # image_worker will call mark_done when it completes

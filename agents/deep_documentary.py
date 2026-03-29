@@ -73,8 +73,7 @@ from agents.base_agent import BaseAgent
 from config import ProcExConfig
 from utils.llm_client import LLMClient
 from utils.slug import slugify
-
-
+#
 # ── Paragraph type constants ──────────────────────────────────────────────────
 P_NARRATOR  = "NARRATOR"
 P_STORY     = "STORY"
@@ -597,6 +596,7 @@ class DeepDocumentaryAgent(BaseAgent):
         {("FORBIDDEN (these words signal AI slop — never use them):\n" + forbidden_section) if forbidden_section else ""}
 
         TTS-SPECIFIC WRITING RULES (non-negotiable):
+          • Avoid using em dash as it makes it hard to comprehend, instead use relative clauses that begin with either which, who, whose etc"
           • Embed [pauses] before every date, name, ironic reversal, or key fact.
             Example: "In 1935, [pauses] Schrödinger invented a thought experiment."
           • Use sentence fragments for impact: "Blue. [pauses] Nobody could make blue."
@@ -604,6 +604,8 @@ class DeepDocumentaryAgent(BaseAgent):
           • Vary sentence length: long context → short impact → long context → short irony.
           • The shortest sentence in each paragraph carries the most emotional weight.
           • Write as if Derek Muller is speaking to one person who almost clicked away.
+          • Avoid using em dash as it makes it hard to comprehend, instead use relative clauses that begin with either which, who, whose etc"
+          
         """
                 self._log(
                     f"Style pack '{presentation_style}' injected into writer prompt "

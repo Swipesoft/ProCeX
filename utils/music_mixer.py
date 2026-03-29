@@ -42,8 +42,8 @@ from typing import Optional
 # These are RELATIVE weights passed to amix — treated as a ratio (not gain).
 # With normalize=1, amix auto-levels the output to prevent clipping while
 # keeping the ratio. 85:15 gives clearly audible background music.
-VOICE_VOL  = 0.85
-MUSIC_VOL  = 0.15
+VOICE_VOL  = 0.93
+MUSIC_VOL  = 0.07
 
 # Trim from each end of every track (seconds) to avoid intro/outro silence
 TRACK_TRIM = 5.0
