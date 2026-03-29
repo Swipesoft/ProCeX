@@ -180,26 +180,75 @@ def run_tts_and_director_parallel(
                         scene.tts_audio_start = getattr(tts_src, "tts_audio_start", 0.0)
                     # Timestamps already sliced by _expand_subscenes
 
-            # ── Fix subscene beat tts_audio_start offsets ────────────────────
-            # _expand_subscenes computed beat starts RELATIVE to the parent's
-            # tts_audio_start, which was 0.0 during the parallel stage
-            # (TTSAgent hadn't set absolute offsets yet).
-            # Now that we have actual parent starts from TTSAgent, convert each
-            # subscene's relative offset → absolute position in combined audio.
+            # ── Fix subscene beat durations AND tts_audio_start offsets ─────
             #
-            # Example: Scene 2 starts at 27.0s in combined audio.
-            #   Beat 1 computed relative start = 0.0s  → fixed = 27.0s ✓
-            #   Beat 2 computed relative start = 16.2s → fixed = 43.2s ✓
-            #   Beat 3 computed relative start = 32.4s → fixed = 59.4s ✓
+            # ROOT CAUSE OF SCENE-4 BUG:
+            # _expand_subscenes uses parent.tts_duration to size beats, but
+            # VisualDirector ran in PARALLEL with TTSAgent — so tts_duration
+            # was 0.0 at that moment and it fell back to duration_seconds
+            # (the LLM estimate). Example from logs:
+            #   Director estimate: 41.0s  → beats sum to 40.6s
+            #   Actual TTS:        48.3s  → last 7.7s has NO beat covering it
+            #   Result: last ~2 sentences play in the audio but video has ended.
+            #
+            # FIX — two passes:
+            # Pass 1: Proportionally rescale each group of sibling beats so
+            #         their durations sum to the actual parent tts_duration.
+            # Pass 2: Recompute tts_audio_start for every beat from scratch
+            #         using the rescaled durations + actual parent abs offset.
+            #
+            # This is purely additive — no existing feature is removed.
+
+            # Group subscene beats by parent id
+            from collections import defaultdict as _dd
+            beats_by_parent = _dd(list)
             for scene in dir_scenes:
                 if scene.parent_scene_id:
-                    parent_src = tts_by_id.get(scene.parent_scene_id)
-                    if parent_src:
-                        parent_abs = getattr(parent_src, "tts_audio_start", 0.0)
-                        if parent_abs > 0.0:
-                            scene.tts_audio_start = round(
-                                scene.tts_audio_start + parent_abs, 4
-                            )
+                    beats_by_parent[scene.parent_scene_id].append(scene)
+
+            for parent_id, beats in beats_by_parent.items():
+                parent_src = tts_by_id.get(parent_id)
+                if not parent_src:
+                    continue
+
+                actual_dur = getattr(parent_src, "tts_duration", 0.0) or 0.0
+                parent_abs = getattr(parent_src, "tts_audio_start", 0.0)
+
+                if actual_dur <= 0:
+                    continue
+
+                # ── Pass 1: rescale beat durations ────────────────────────────
+                beat_sum = sum(
+                    getattr(b, "tts_duration", 0.0) or b.duration_seconds
+                    for b in beats
+                )
+
+                if beat_sum > 0 and abs(beat_sum - actual_dur) > 0.05:
+                    # Proportional rescale
+                    scale = actual_dur / beat_sum
+                    scaled = [
+                        round((getattr(b, "tts_duration", 0.0) or b.duration_seconds) * scale, 4)
+                        for b in beats
+                    ]
+                    # Absorb rounding error into last beat so sum is exact
+                    rounding_err = round(actual_dur - sum(scaled[:-1]), 4)
+                    scaled[-1] = rounding_err
+                    for b, new_dur in zip(beats, scaled):
+                        b.tts_duration     = new_dur
+                        b.duration_seconds = new_dur
+                    print(
+                        f"[Parallel] Scene {parent_id} beats rescaled: "
+                        f"{beat_sum:.2f}s → {actual_dur:.2f}s "
+                        f"(scale={scale:.4f})"
+                    )
+
+                # ── Pass 2: recompute tts_audio_start from actual parent offset ─
+                # Sort beats by their original subscene_index to ensure correct order
+                beats_sorted = sorted(beats, key=lambda b: getattr(b, "subscene_index", b.id))
+                cursor = parent_abs
+                for b in beats_sorted:
+                    b.tts_audio_start = round(cursor, 4)
+                    cursor += b.tts_duration
 
             state.scenes = dir_scenes
             print(f"[Parallel] VisualDirector expanded {len(tts_by_id)} → "

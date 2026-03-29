@@ -23,6 +23,217 @@ from utils.slug import slugify
 from utils.pdf_parser import extract_pdf_text
 
 
+def _upgrade_opening_scene(state, cfg, llm):
+    """
+    Post-Stage B hook: converts the first scene's clip to an animated video
+    if it was rendered as Manim or TEXT_ANIMATION.
+
+    Strategy:
+      1. Find the first scene by tts_audio_start (may be a subscene beat).
+      2. If clip_path points to a Manim render → replace with cinematic opener.
+      3. Generate a Ghibli/cinematic image via Gemini Pro.
+      4. Animate it via Novita I2V (8s clip).  Fallback: ken-burns.
+      5. Write new clip_path in-place — Assembler never knows anything changed.
+
+    Does nothing if:
+      - First scene is already IMAGE_GEN / VIDEO_GEN (already animated)
+      - NOVITA_API_KEY not set (falls back to ken-burns on generated image)
+      - Any step fails (non-critical — original Manim clip is kept)
+    """
+    import os, subprocess, tempfile, base64, time, requests
+
+    from state import VisualStrategy
+    from config import RESOLUTIONS
+    from utils.ken_burns import image_to_video_clip
+
+    if not state.scenes:
+        return
+
+    # ── Find the first scene ──────────────────────────────────────────────────
+    # Sort all scenes by tts_audio_start so we get the true first segment
+    # (could be subscene 101 if Scene 1 was split by VisualDirector).
+    rendered = [s for s in state.scenes if s.clip_path and os.path.exists(s.clip_path)]
+    if not rendered:
+        return
+
+    first = min(rendered, key=lambda s: getattr(s, "tts_audio_start", 0.0))
+
+    # Only upgrade Manim or TEXT_ANIMATION scenes — IMAGE_GEN/VIDEO_GEN are
+    # already animated.
+    if first.visual_strategy not in (VisualStrategy.MANIM,
+                                      VisualStrategy.TEXT_ANIMATION):
+        print(f"[OpeningHook] Scene {first.id} is already "
+              f"{first.visual_strategy.value} — no upgrade needed")
+        return
+
+    print(f"[OpeningHook] Scene {first.id} ({first.visual_strategy.value}) → "
+          f"upgrading to cinematic opener...")
+
+    res       = RESOLUTIONS.get(state.resolution, RESOLUTIONS["1080p"])
+    ratio_str = "9:16" if res.is_portrait else "16:9"
+    images_dir = cfg.dirs["images"]
+    videos_dir = cfg.dirs["videos"]
+    scenes_dir = cfg.dirs["scenes"]
+    os.makedirs(images_dir, exist_ok=True)
+    os.makedirs(videos_dir, exist_ok=True)
+    os.makedirs(scenes_dir, exist_ok=True)
+
+    # ── Step 1: Generate cinematic opening image ──────────────────────────────
+    # Build a prompt tuned for dramatic openers — dark, cinematic, specific to
+    # the topic from the scene's narration_text.
+    narration_snippet = (first.narration_text or "")[:200].replace("\n", " ")
+    topic_hint        = state.topic_slug.replace("_", " ") if state.topic_slug else ""
+
+    opening_prompt = (
+        f"Studio Ghibli aesthetic, dramatic cinematic opening frame. "
+        f"Dark atmospheric background with subtle light rays. "
+        f"The scene evokes: {narration_snippet}. "
+        f"Rich painterly detail, emotionally resonant, no text, no watermarks, "
+        f"no UI elements. "
+        f"{'Vertical 9:16 portrait composition.' if res.is_portrait else 'Wide 16:9 cinematic composition.'}"
+    )
+
+    img_path = os.path.join(images_dir, f"scene_{first.id:02d}_opening_hook.png")
+
+    try:
+        from google import genai as _genai_mod
+        from google.genai import types as _types
+        import google.generativeai
+
+        genai_client = _genai_mod.Client(
+            api_key=os.environ.get("GEMINI_API_KEY", "")
+        )
+        response = genai_client.models.generate_content(
+            model="gemini-2.0-flash-preview-image-generation",
+            contents=opening_prompt,
+            config=_types.GenerateContentConfig(
+                response_modalities=["image", "text"],
+            ),
+        )
+        parts = response.parts or []
+        saved = False
+        for part in parts:
+            if hasattr(part, "inline_data") and part.inline_data:
+                img_bytes = part.inline_data.data
+                if isinstance(img_bytes, str):
+                    import base64 as _b64
+                    img_bytes = _b64.b64decode(img_bytes)
+                with open(img_path, "wb") as f:
+                    f.write(img_bytes)
+                saved = True
+                break
+        if not saved:
+            raise RuntimeError("No image data returned")
+        print(f"[OpeningHook] Image generated → {os.path.basename(img_path)}")
+    except Exception as e:
+        print(f"[OpeningHook] Image generation failed ({e}) — keeping Manim clip")
+        return
+
+    # ── Step 2: Animate via Novita I2V ────────────────────────────────────────
+    novita_key = os.environ.get("NOVITA_API_KEY", "")
+    tts_dur    = getattr(first, "tts_duration", 0.0) or first.duration_seconds
+    clip_secs  = min(8, max(4, int(tts_dur)))
+
+    new_clip_path = os.path.join(scenes_dir,
+                                 f"scene_{first.id:02d}_opening_hook.mp4")
+
+    if novita_key:
+        try:
+            # Encode image
+            with open(img_path, "rb") as f: raw = f.read()
+            ext  = os.path.splitext(img_path)[1].lstrip(".").lower()
+            mime = f"image/{ext}" if ext in ("jpg","jpeg","png","webp") else "image/png"
+            b64  = f"data:{mime};base64,{base64.b64encode(raw).decode()}"
+
+            headers = {
+                "Authorization": f"Bearer {novita_key}",
+                "Content-Type":  "application/json",
+            }
+            payload = {
+                "image":          b64,
+                "prompt":         (
+                    "Slow dramatic camera push-in. Atmospheric lighting shift. "
+                    "Subtle particle effects. Cinematic. No text. No watermarks."
+                ),
+                "duration":       clip_secs,
+                "ratio":          "adaptive",
+                "resolution":     "720p",
+                "fps":            24,
+                "watermark":      False,
+                "generate_audio": False,
+                "camera_fixed":   False,
+                "seed":           -1,
+            }
+
+            NOVITA_I2V  = "https://api.novita.ai/v3/async/seedance-v1.5-pro-i2v"
+            NOVITA_POLL = "https://api.novita.ai/v3/async/task-result"
+
+            r = requests.post(NOVITA_I2V, json=payload, headers=headers, timeout=30)
+            r.raise_for_status()
+            task_id = r.json().get("task_id", "")
+            if not task_id:
+                raise RuntimeError("No task_id returned")
+            print(f"[OpeningHook] I2V submitted — task_id={task_id}")
+
+            # Poll
+            deadline = time.time() + 300
+            video_url = None
+            while time.time() < deadline:
+                time.sleep(5)
+                poll = requests.get(NOVITA_POLL, headers=headers,
+                                    params={"task_id": task_id}, timeout=15)
+                poll.raise_for_status()
+                data   = poll.json()
+                status = data.get("task", {}).get("status", "")
+                if status == "TASK_STATUS_SUCCEED":
+                    videos    = data.get("videos", [])
+                    video_url = videos[0].get("video_url", "") if videos else ""
+                    break
+                elif status in ("TASK_STATUS_FAILED", "TASK_STATUS_EXPIRED"):
+                    raise RuntimeError(f"I2V task {status}")
+
+            if not video_url:
+                raise RuntimeError("No video_url after polling")
+
+            # Download — no auth header for S3 pre-signed URLs
+            dl = requests.get(video_url, headers={}, timeout=120, stream=True)
+            dl.raise_for_status()
+            with open(new_clip_path, "wb") as f:
+                for chunk in dl.iter_content(8192):
+                    if chunk: f.write(chunk)
+            print(f"[OpeningHook] I2V clip downloaded → {os.path.basename(new_clip_path)}")
+
+        except Exception as e:
+            print(f"[OpeningHook] I2V failed ({e}) — falling back to ken-burns")
+            novita_key = ""   # trigger ken-burns fallback below
+
+    if not novita_key:
+        # Ken-burns fallback — still far better than a Manim slide as an opener
+        try:
+            from utils.ken_burns import image_to_video_clip, cycle_effect
+            image_to_video_clip(
+                image_path  = img_path,
+                duration    = tts_dur,
+                output_path = new_clip_path,
+                resolution  = state.resolution,
+                effect      = "drift",   # slow drift is most cinematic for opener
+            )
+            print(f"[OpeningHook] Ken-burns fallback → {os.path.basename(new_clip_path)}")
+        except Exception as e:
+            print(f"[OpeningHook] Ken-burns failed ({e}) — keeping original Manim clip")
+            return
+
+    # ── Step 3: Replace clip_path in state so Assembler uses new clip ─────────
+    if os.path.exists(new_clip_path) and os.path.getsize(new_clip_path) > 1000:
+        old_clip = first.clip_path
+        first.clip_path      = new_clip_path
+        first.visual_strategy = VisualStrategy.IMAGE_GEN   # label it correctly
+        print(f"[OpeningHook] ✓ Scene {first.id} upgraded: "
+              f"{os.path.basename(old_clip)} → {os.path.basename(new_clip_path)}")
+    else:
+        print(f"[OpeningHook] New clip empty or missing — keeping original Manim clip")
+
+
 class ProcExOrchestrator:
 
     def __init__(self, cfg: ProcExConfig | None = None):
@@ -113,6 +324,19 @@ class ProcExOrchestrator:
                 raise
             self._checkpoint(state)
             print("[ProcEx] ✓ Generation + render pipeline done")
+
+
+        # ════════════════════════════════════════════════════════════════
+        # Stage 4.5 — Opening Hook Upgrade  [post-Stage B, pre-Assembler]
+        # If the very first rendered scene is a Manim/Text clip, convert it
+        # to an animated video (I2V) or at minimum a cinematic image with
+        # ken-burns. This gives every video a live-motion opening frame that
+        # captures viewers before they scroll away.
+        # ════════════════════════════════════════════════════════════════
+        try:
+            _upgrade_opening_scene(state, self.cfg, self.llm)
+        except Exception as _e:
+            print(f"[ProcEx] Opening hook upgrade failed (non-critical): {_e}")
 
         # ════════════════════════════════════════════════════════════════
         # Stage 5 — AssemblerAgent  [sequential]
