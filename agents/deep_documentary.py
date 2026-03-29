@@ -314,6 +314,7 @@ class DeepDocumentaryAgent(BaseAgent):
         self,
         topic:          str,
         target_minutes: float = 6.0,
+        presentation_style: str = "tiktok-thriller"
     ) -> str:
         """
         Full pipeline: research → write → assemble PDF.
@@ -326,7 +327,7 @@ class DeepDocumentaryAgent(BaseAgent):
         searches = self._research_loop(topic)
 
         # Stage 3: Write
-        script = self._write_documentary(topic, searches, target_minutes)
+        script = self._write_documentary(topic, searches, target_minutes, presentation_style=presentation_style)
 
         # Stage 4: PDF
         pdf_path = self._build_pdf(script, topic)
@@ -535,6 +536,7 @@ class DeepDocumentaryAgent(BaseAgent):
         topic:          str,
         searches:       list[SearchResult],
         target_minutes: float,
+        presentation_style: str = "tiktok-thriller"
     ) -> DocumentaryScript:
         """LLM composes the full tagged documentary script."""
         self._log("Writing documentary script...")
@@ -555,11 +557,73 @@ class DeepDocumentaryAgent(BaseAgent):
 
         # Target paragraph count: ~6 paragraphs per minute (narrator-heavy)
         target_paragraphs = int(target_minutes * 6)
+        ############################################
+        # ── Load style pack and inject narration voice guidance ───────────
+        # ScriptWriter normally applies the style pack but is bypassed for
+        # documentary mode. Inject vocal_palette + narration_tone here so
+        # Gemini writes with [pauses], Derek Muller voice persona, and
+        # forbidden pattern rules baked into the narration text.
+        style_guidance = ""
+        try:
+            import yaml as _yaml, os as _os
+            skills_dir = _os.path.join(_os.path.dirname(__file__),
+                                       "..", "skills", "styles")
+            style_file = _os.path.join(skills_dir,
+                                       f"{presentation_style}.yaml")
+            if _os.path.exists(style_file):
+                with open(style_file, encoding="utf-8") as f:
+                    style_pack = _yaml.safe_load(f) or {}
+
+                vocal = style_pack.get("vocal_palette", "")
+                tone = style_pack.get("narration_tone", "")
+
+                # Extract just the FORBIDDEN PATTERNS section
+                forbidden_section = ""
+                if "FORBIDDEN PATTERNS" in (tone or ""):
+                    start = tone.find("FORBIDDEN PATTERNS")
+                    forbidden_section = tone[start:start + 600].strip()
+
+                if vocal or tone:
+                    style_guidance = f"""
+
+        NARRATION VOICE AND TTS STYLE — CRITICAL:
+        The following rules govern how the script is WRITTEN for text-to-speech.
+        Gemini TTS reads this verbatim. The vocal markers below are real TTS cues.
+
+        {("VOCAL PALETTE:\n" + vocal[:800]) if vocal else ""}
+
+        {("NARRATION PERSONA:\n" + tone[:600]) if tone else ""}
+
+        {("FORBIDDEN (these words signal AI slop — never use them):\n" + forbidden_section) if forbidden_section else ""}
+
+        TTS-SPECIFIC WRITING RULES (non-negotiable):
+          • Embed [pauses] before every date, name, ironic reversal, or key fact.
+            Example: "In 1935, [pauses] Schrödinger invented a thought experiment."
+          • Use sentence fragments for impact: "Blue. [pauses] Nobody could make blue."
+          • Max 2 vocal sounds per paragraph. Never open a paragraph with one.
+          • Vary sentence length: long context → short impact → long context → short irony.
+          • The shortest sentence in each paragraph carries the most emotional weight.
+          • Write as if Derek Muller is speaking to one person who almost clicked away.
+        """
+                self._log(
+                    f"Style pack '{presentation_style}' injected into writer prompt "
+                    f"({len(style_guidance)} chars)"
+                )
+            else:
+                self._log(
+                    f"Style pack '{presentation_style}' not found — "
+                    f"using default documentary voice"
+                )
+        except Exception as e:
+            self._log(f"Style pack load failed (non-critical): {e}")
+            style_guidance = ""
+        ##################################################
 
         system = _WRITER_SYSTEM.format(
             target_minutes    = target_minutes,
             target_paragraphs = target_paragraphs,
-        )
+        ) + style_guidance
+
         user = _WRITER_USER.format(
             topic             = topic,
             target_minutes    = target_minutes,

@@ -440,9 +440,170 @@ def run_generation_render_pipeline(
     # first 8s then appends ken-burns for the remainder. VisualDirector never
     # knows — it still plans IMAGE_GEN. Assembler sees one clip per scene.
 
+    # ── Beat prompt helper ────────────────────────────────────────────────
+    # Generates N Ghibli-style image+motion prompts from a scene's narration
+    # split at sentence/clause boundaries into N temporal buckets.
+
+    def _generate_beat_prompts(scene: Scene, n_beats: int) -> "list[dict]":
+        """
+        Returns a list of dicts, one per beat:
+          {
+            "text":         str,   # sentence(s) for this beat
+            "duration":     float, # seconds this beat covers
+            "image_prompt": str,   # Ghibli-style image prompt
+            "motion_hint":  str,   # I2V motion directive
+            "start_word_i": int,   # first word index
+            "end_word_i":   int,   # last word index (exclusive)
+          }
+        Falls back gracefully to [None] * n_beats on any LLM failure.
+        """
+        import re as _re
+
+        narration = scene.narration_text.strip()
+        timestamps = list(getattr(scene, "timestamps", []) or [])
+        tts_dur    = getattr(scene, "tts_duration", 0.0) or scene.duration_seconds
+
+        # ── Step 1: split narration at sentence/clause boundaries ────────
+        # Split on: .  !  ?  ;  — (em-dash)  but never mid-word.
+        # Keep delimiters so we can reconstruct full sentences.
+        raw_segments = _re.split(r'(?<=[.!?;])\s+|(?<=—)\s*', narration)
+        segments = [s.strip() for s in raw_segments if s.strip()]
+        if not segments:
+            segments = [narration]
+
+        # ── Step 2: group segments into n_beats temporal buckets ─────────
+        # Map each word to its timestamp, then assign segments to buckets
+        # so each bucket covers roughly tts_dur / n_beats seconds.
+        target_dur = tts_dur / n_beats
+
+        # Build word→timestamp lookup from scene.timestamps
+        word_times = {}  # word_index → end_time
+        for i, ts in enumerate(timestamps):
+            word_times[i] = getattr(ts, "end", 0.0)
+
+        # Assign each word an index within the narration
+        narration_words = narration.split()
+        n_words = len(narration_words)
+
+        # Map segment start/end to word indices
+        seg_word_ranges = []
+        word_cursor = 0
+        for seg in segments:
+            seg_words = seg.split()
+            seg_word_ranges.append((word_cursor, word_cursor + len(seg_words)))
+            word_cursor += len(seg_words)
+
+        # Group segments into n_beats buckets by cumulative duration
+        beats_raw = []
+        bucket_segs, bucket_dur = [], 0.0
+        bucket_start_wi = 0
+
+        for idx, (seg, (wi_start, wi_end)) in enumerate(
+                zip(segments, seg_word_ranges)):
+            # Estimate segment duration from timestamps
+            t_start = word_times.get(wi_start, wi_start / max(n_words, 1) * tts_dur)
+            t_end   = word_times.get(min(wi_end - 1, n_words - 1),
+                                     wi_end / max(n_words, 1) * tts_dur)
+            seg_dur = max(t_end - t_start, 0.5)
+
+            bucket_segs.append(seg)
+            bucket_dur += seg_dur
+
+            # Flush bucket when: full enough, OR last segment
+            is_last = (idx == len(segments) - 1)
+            should_flush = (bucket_dur >= target_dur and
+                            len(beats_raw) < n_beats - 1) or is_last
+
+            if should_flush:
+                wi_end_bucket = wi_end
+                beats_raw.append({
+                    "text":         " ".join(bucket_segs),
+                    "duration":     round(bucket_dur, 2),
+                    "start_word_i": bucket_start_wi,
+                    "end_word_i":   wi_end_bucket,
+                })
+                bucket_start_wi = wi_end
+                bucket_segs, bucket_dur = [], 0.0
+
+        # Ensure exactly n_beats (merge last two if over, pad if under)
+        while len(beats_raw) > n_beats:
+            last = beats_raw.pop()
+            beats_raw[-1]["text"]     += " " + last["text"]
+            beats_raw[-1]["duration"] += last["duration"]
+            beats_raw[-1]["end_word_i"] = last["end_word_i"]
+        while len(beats_raw) < n_beats and beats_raw:
+            beats_raw.append(dict(beats_raw[-1]))  # pad with copy of last
+
+        # ── Step 3: LLM generates image+motion prompt for each beat ──────
+        BEAT_SYSTEM = (
+            "You are a Ghibli-style visual director. Given a narration beat and its "
+            "parent visual context, produce a JSON object with exactly two keys:\n"
+            "  \"image_prompt\": a 60-120 word painterly image prompt in Studio Ghibli "
+            "aesthetic — atmospheric depth, soft diffused light, emotionally resonant "
+            "framing, rich background detail, no text or watermarks.\n"
+            "  \"motion_hint\": a 10-20 word I2V camera/motion directive that matches "
+            "the emotional beat (e.g. \"slow push-in on the figure\", "
+            "\"gentle rack focus from background to foreground\", "
+            "\"soft aerial drift across the landscape\").\n"
+            "Maintain visual continuity with the parent context. Return ONLY valid JSON."
+        )
+
+        results = []
+        MAX_PROMPT_RETRIES = 3
+
+        for i, beat in enumerate(beats_raw):
+            beat_user = (
+                f"Parent visual context: {scene.visual_prompt[:200]}\n\n"
+                f"Beat {i+1}/{n_beats} narration ({beat['duration']:.1f}s):\n"
+                f"{beat['text']}\n\n"
+                f"Paragraph type: {getattr(scene, 'paragraph_type', '') or 'general'}\n"
+                f"Generate the image_prompt and motion_hint for this beat."
+            )
+
+            prompt_result = None
+            for attempt in range(1, MAX_PROMPT_RETRIES + 1):
+                try:
+                    prompt_result = llm.complete_json(
+                        BEAT_SYSTEM, beat_user,
+                        max_tokens=512,
+                        temperature=0.85,
+                        primary_provider="gemini",
+                    )
+                    if "image_prompt" in prompt_result and "motion_hint" in prompt_result:
+                        break
+                    prompt_result = None
+                except Exception as e:
+                    log(f"Image: Scene {scene.id} beat {i+1} prompt attempt "
+                        f"{attempt}/{MAX_PROMPT_RETRIES} failed: {e}")
+                    if attempt < MAX_PROMPT_RETRIES:
+                        time.sleep(2.0 * attempt)
+
+            if prompt_result:
+                beat["image_prompt"] = prompt_result.get("image_prompt", beat["text"])
+                beat["motion_hint"]  = prompt_result.get("motion_hint", "slow cinematic drift")
+            else:
+                # Fallback: use parent visual_prompt with beat text appended
+                beat["image_prompt"] = (
+                    f"{scene.visual_prompt[:150]}. Scene moment: {beat['text'][:100]}"
+                )
+                beat["motion_hint"] = "slow cinematic camera drift"
+                log(f"Image: Scene {scene.id} beat {i+1} — LLM failed, "
+                    f"using parent prompt as fallback")
+
+            results.append(beat)
+
+        return results
+
+    # ── I2V upgrade — multi-beat pipeline ─────────────────────────────────
+    # Replaces single-image I2V with N beat-specific images animated in sequence.
+    # External interface is identical: returns combined clip path or None.
+    # On any failure, falls back gracefully to the original single-image path.
+
     def _try_i2v_upgrade(scene: Scene):
         import subprocess as _sp, tempfile as _tf, shutil as _sh, os as _os
+        from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed as _ac
         from utils.ken_burns import image_to_video_clip, cycle_effect
+        import copy as _copy
 
         tts_dur = getattr(scene, "tts_duration", 0.0) or scene.duration_seconds
         if tts_dur < I2V_UPGRADE_THRESHOLD:
@@ -453,32 +614,334 @@ def run_generation_render_pipeline(
         if not scene.image_paths or not _os.path.exists(scene.image_paths[0]):
             return None
 
+        # ── Determine number of beats ─────────────────────────────────────
+        # n = floor(tts_dur / 5), capped at 3, minimum 2.
+        # Each beat needs >= 4s for I2V API minimum.
+        n_beats = min(3, max(2, int(tts_dur // 5)))
+        beat_dur = tts_dur / n_beats
+        if beat_dur < 4.0:
+            n_beats = max(1, int(tts_dur // 4))
+
+        # Single beat: fall through to original simple I2V (no multi-image overhead)
+        if n_beats == 1:
+            n_beats = 1   # handled below in legacy path
+
+        log(f"Image: Scene {scene.id} multi-beat I2V: {n_beats} beats × "
+            f"~{tts_dur/n_beats:.1f}s each (total {tts_dur:.1f}s)")
+
+        combined_path = _os.path.join(
+            cfg.dirs["scenes"], f"scene_{scene.id:02d}.mp4"
+        )
+        images_dir = cfg.dirs["images"]
+        videos_dir = cfg.dirs["videos"]
+
+        # ── Step 1: Generate beat prompts ─────────────────────────────────
+        MAX_BEATS_RETRIES = 3
+        try:
+            beats = _generate_beat_prompts(scene, n_beats)
+        except Exception as e:
+            log(f"Image: Scene {scene.id} beat prompt generation failed ({e}) "
+                f"— falling back to single-image I2V")
+            beats = None
+
+        if not beats:
+            # Graceful fallback: single I2V of original image (original behaviour)
+            return _single_i2v_fallback(scene, tts_dur, combined_path,
+                                        videos_dir, images_dir, _sp, _tf, _sh, _os)
+
+        # ── Step 2: Generate one image per beat (parallel) ────────────────
+        # Create a lightweight scene clone per beat to avoid mutating the original.
+        beat_image_paths = [None] * n_beats
+        IMAGE_MAX_RETRIES = 3
+
+        def _gen_beat_image(beat_idx: int, beat: dict) -> "str | None":
+            """Generate image for one beat. Returns image path or None."""
+            beat_scene_id = f"{scene.id}b{beat_idx+1}"
+            img_path = _os.path.join(images_dir,
+                                     f"scene_{scene.id}_beat_{beat_idx+1}_raw.png")
+
+            # Build a minimal scene-like object for _generate_for_scene
+            beat_scene = _copy.copy(scene)
+            beat_scene.visual_prompt = beat["image_prompt"]
+            beat_scene.image_paths   = []
+            # Use a unique numeric id for file naming inside _generate_for_scene
+            # by temporarily overriding image save path via direct API call
+            for attempt in range(1, IMAGE_MAX_RETRIES + 1):
+                try:
+                    import google.generativeai  # verify import path
+                except ImportError:
+                    pass
+                try:
+                    from google import genai as _genai_mod
+                    from google.genai import types as _types
+
+                    prompt = (
+                        beat["image_prompt"] + "\n\n"
+                        "Style: Studio Ghibli. Painterly. Atmospheric. "
+                        "No text. No watermarks. No UI elements."
+                    )
+                    if state.resolution.endswith("_v"):
+                        prompt += " Vertical 9:16 portrait composition."
+
+                    response = imager._genai.models.generate_content(
+                        model=imager.cfg.nano_pro_model,
+                        contents=prompt,
+                        config=_types.GenerateContentConfig(
+                            response_modalities=["image", "text"],
+                        ),
+                    )
+                    parts = response.parts or []
+                    saved = False
+                    for part in parts:
+                        if hasattr(part, "inline_data") and part.inline_data:
+                            import base64 as _b64
+                            img_bytes = part.inline_data.data
+                            if isinstance(img_bytes, str):
+                                img_bytes = _b64.b64decode(img_bytes)
+                            with open(img_path, "wb") as f:
+                                f.write(img_bytes)
+                            saved = True
+                            break
+                    if saved:
+                        log(f"Image: Scene {scene.id} beat {beat_idx+1} image OK "
+                            f"(attempt {attempt})")
+                        return img_path
+                    raise RuntimeError("No image data in response")
+                except Exception as e:
+                    log(f"Image: Scene {scene.id} beat {beat_idx+1} image attempt "
+                        f"{attempt}/{IMAGE_MAX_RETRIES} failed: {e}")
+                    if attempt < IMAGE_MAX_RETRIES:
+                        time.sleep(2.0 * attempt)
+            return None
+
+        with _TPE(max_workers=min(n_beats, 3)) as pool:
+            futs = {pool.submit(_gen_beat_image, i, b): i
+                    for i, b in enumerate(beats)}
+            for fut in _ac(futs):
+                idx = futs[fut]
+                try:
+                    beat_image_paths[idx] = fut.result()
+                except Exception as e:
+                    log(f"Image: Scene {scene.id} beat {idx+1} image future "
+                        f"failed: {e}")
+
+        # Check how many beats have valid images
+        valid_beats = [(i, beats[i], p) for i, p in enumerate(beat_image_paths)
+                       if p and _os.path.exists(p)]
+
+        if not valid_beats:
+            log(f"Image: Scene {scene.id} all beat images failed — "
+                f"falling back to single-image I2V")
+            return _single_i2v_fallback(scene, tts_dur, combined_path,
+                                        videos_dir, images_dir, _sp, _tf, _sh, _os)
+
+        # For partially failed beats, fill gaps with original image
+        for i in range(n_beats):
+            if beat_image_paths[i] is None:
+                beat_image_paths[i] = scene.image_paths[0]
+                log(f"Image: Scene {scene.id} beat {i+1} using original image "
+                    f"as fallback")
+
+        # ── Step 3: Submit I2V for each beat (parallel) ───────────────────
+        from config import RESOLUTIONS as _RES
+        res        = _RES.get(state.resolution, _RES["1080p"])
+        ratio_str  = "9:16" if res.is_portrait else "16:9"
+        I2V_MAX_RETRIES = 3
+        beat_clips = [None] * n_beats
+
+        def _gen_beat_clip(beat_idx: int, beat: dict,
+                           img_path: str) -> "str | None":
+            """Submit I2V and download clip for one beat."""
+            clip_secs = max(4, min(8, int(beats[beat_idx]["duration"])))
+
+            import base64 as _b64, requests as _req, time as _time
+            NOVITA_I2V = "https://api.novita.ai/v3/async/seedance-v1.5-pro-i2v"
+            NOVITA_RES = "https://api.novita.ai/v3/async/task-result"
+            headers    = {
+                "Authorization": f"Bearer {novita_key}",
+                "Content-Type":  "application/json",
+            }
+            # Encode image
+            try:
+                with open(img_path, "rb") as f: raw = f.read()
+                ext  = _os.path.splitext(img_path)[1].lstrip(".").lower()
+                mime = f"image/{ext}" if ext in ("jpg","jpeg","png","webp") else "image/png"
+                b64  = f"data:{mime};base64,{_b64.b64encode(raw).decode()}"
+            except Exception as e:
+                log(f"Image: Scene {scene.id} beat {beat_idx+1} encode failed: {e}")
+                return None
+
+            motion = beat.get("motion_hint", "slow cinematic drift")
+            prompt = (f"{beat['image_prompt'][:300]}. {motion}. "
+                      f"No text overlays. No watermarks.")
+
+            payload = {
+                "image": b64, "prompt": prompt,
+                "duration": clip_secs, "ratio": "adaptive",
+                "resolution": "720p", "fps": 24,
+                "watermark": False, "generate_audio": False,
+                "camera_fixed": False, "seed": -1,
+            }
+
+            for attempt in range(1, I2V_MAX_RETRIES + 1):
+                try:
+                    r = _req.post(NOVITA_I2V, json=payload,
+                                  headers=headers, timeout=30)
+                    if r.status_code == 429:
+                        import re as _re2
+                        m = _re2.search(r'retry.{0,10}?([\d.]+)\s*s',
+                                        r.text, _re2.IGNORECASE)
+                        sleep = float(m.group(1)) + 2 if m else 30.0
+                        log(f"Image: Scene {scene.id} beat {beat_idx+1} I2V 429 "
+                            f"— retry in {sleep:.0f}s (attempt {attempt})")
+                        _time.sleep(sleep)
+                        continue
+                    r.raise_for_status()
+                    task_id = r.json().get("task_id", "")
+                    if not task_id:
+                        raise RuntimeError("No task_id in I2V response")
+                    break
+                except Exception as e:
+                    log(f"Image: Scene {scene.id} beat {beat_idx+1} I2V submit "
+                        f"attempt {attempt}/{I2V_MAX_RETRIES} failed: {e}")
+                    if attempt < I2V_MAX_RETRIES:
+                        _time.sleep(5.0 * attempt)
+                    else:
+                        return None
+
+            # Poll
+            deadline = _time.time() + 300
+            while _time.time() < deadline:
+                _time.sleep(5)
+                try:
+                    poll = _req.get(NOVITA_RES, headers=headers,
+                                    params={"task_id": task_id}, timeout=15)
+                    poll.raise_for_status()
+                    data   = poll.json()
+                    status = data.get("task", {}).get("status", "")
+                    if status == "TASK_STATUS_SUCCEED":
+                        videos    = data.get("videos", [])
+                        video_url = videos[0].get("video_url", "") if videos else ""
+                        if not video_url:
+                            return None
+                        # Download (no auth header — S3 pre-signed)
+                        dl = _req.get(video_url, headers={},
+                                      timeout=120, stream=True)
+                        dl.raise_for_status()
+                        out_path = _os.path.join(
+                            videos_dir,
+                            f"scene_{scene.id}_beat_{beat_idx+1}.mp4"
+                        )
+                        with open(out_path, "wb") as f:
+                            for chunk in dl.iter_content(8192):
+                                if chunk: f.write(chunk)
+                        log(f"Image: Scene {scene.id} beat {beat_idx+1} clip ✓ "
+                            f"({clip_secs}s)")
+                        return out_path
+                    elif status in ("TASK_STATUS_FAILED", "TASK_STATUS_EXPIRED"):
+                        log(f"Image: Scene {scene.id} beat {beat_idx+1} task {status}")
+                        return None
+                except Exception as e:
+                    log(f"Image: Scene {scene.id} beat {beat_idx+1} poll error: {e}")
+
+            log(f"Image: Scene {scene.id} beat {beat_idx+1} timed out")
+            return None
+
+        with _TPE(max_workers=min(n_beats, 3)) as pool:
+            futs = {pool.submit(_gen_beat_clip, i, beats[i], beat_image_paths[i]): i
+                    for i in range(n_beats)}
+            for fut in _ac(futs):
+                idx = futs[fut]
+                try:
+                    beat_clips[idx] = fut.result()
+                except Exception as e:
+                    log(f"Image: Scene {scene.id} beat {idx+1} clip future: {e}")
+
+        # ── Step 4: Fill failed clips with ken-burns fallback ─────────────
+        for i in range(n_beats):
+            if beat_clips[i] is None or not _os.path.exists(beat_clips[i] or ""):
+                img  = beat_image_paths[i] or scene.image_paths[0]
+                dur  = beats[i]["duration"]
+                kb   = _os.path.join(videos_dir,
+                                     f"scene_{scene.id}_beat_{i+1}_kb.mp4")
+                try:
+                    image_to_video_clip(
+                        image_path=img, duration=dur,
+                        output_path=kb, resolution=state.resolution,
+                        effect=cycle_effect(scene.id + i),
+                    )
+                    beat_clips[i] = kb
+                    log(f"Image: Scene {scene.id} beat {i+1} ken-burns fallback ✓")
+                except Exception as e:
+                    log(f"Image: Scene {scene.id} beat {i+1} ken-burns fallback "
+                        f"failed: {e}")
+
+        # ── Step 5: Concat all beat clips ─────────────────────────────────
+        valid_clips = [c for c in beat_clips if c and _os.path.exists(c)]
+        if not valid_clips:
+            log(f"Image: Scene {scene.id} all beats failed — "
+                f"falling back to single-image I2V")
+            return _single_i2v_fallback(scene, tts_dur, combined_path,
+                                        videos_dir, images_dir, _sp, _tf, _sh, _os)
+
+        if len(valid_clips) == 1:
+            _sh.copy2(valid_clips[0], combined_path)
+            log(f"Image: Scene {scene.id} multi-beat ✓ (1 clip)")
+            return combined_path
+
+        with _tf.NamedTemporaryFile(mode="w", suffix=".txt", delete=False,
+                                    encoding="utf-8") as f:
+            for c in valid_clips:
+                f.write(f"file '{_os.path.abspath(c)}'\n")
+            list_path = f.name
+        try:
+            r = _sp.run([
+                "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path,
+                "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                "-pix_fmt", "yuv420p", "-an", combined_path,
+            ], capture_output=True, text=True, timeout=300)
+            _os.unlink(list_path)
+            if r.returncode != 0:
+                raise RuntimeError(r.stderr[-300:])
+        except Exception as e:
+            try: _os.unlink(list_path)
+            except Exception: pass
+            log(f"Image: Scene {scene.id} concat failed ({e}) — "
+                f"using first valid clip")
+            _sh.copy2(valid_clips[0], combined_path)
+
+        log(f"Image: Scene {scene.id} multi-beat I2V ✓ → {combined_path} "
+            f"({len(valid_clips)}/{n_beats} clips)")
+        return combined_path
+
+    # ── Single-image I2V fallback ─────────────────────────────────────────
+    # Preserved exactly from original _try_i2v_upgrade for graceful degradation.
+
+    def _single_i2v_fallback(scene, tts_dur, combined_path,
+                              videos_dir, images_dir, _sp, _tf, _sh, _os):
+        """Original single-image I2V + ken-burns behaviour. Unchanged."""
+        from utils.ken_burns import image_to_video_clip, cycle_effect
+
         video_secs = min(8, int(tts_dur))
         image_secs = round(tts_dur - video_secs, 3)
-        log(f"Image: Scene {scene.id} I2V upgrade "
-            f"({video_secs}s live + {image_secs:.1f}s still, total {tts_dur:.1f}s)")
+        log(f"Image: Scene {scene.id} single I2V fallback "
+            f"({video_secs}s live + {image_secs:.1f}s still)")
 
-        # Step 1: I2V clip
         try:
             video_clip = videogen.generate_for_scene(
-                scene=scene, resolution=state.resolution, videos_dir=cfg.dirs["videos"]
+                scene=scene, resolution=state.resolution, videos_dir=videos_dir
             )
         except Exception as e:
-            log(f"Image: Scene {scene.id} I2V failed ({e}) — keeping ken-burns")
+            log(f"Image: Scene {scene.id} single I2V failed ({e}) — ken-burns only")
             return None
         if not video_clip or not _os.path.exists(video_clip):
-            log(f"Image: Scene {scene.id} I2V returned no clip — keeping ken-burns")
             return None
 
-        combined = _os.path.join(cfg.dirs["scenes"], f"scene_{scene.id:02d}.mp4")
-
         if image_secs < 0.5:
-            _sh.copy2(video_clip, combined)
-            log(f"Image: Scene {scene.id} I2V upgrade ✓ (video only)")
-            return combined
+            _sh.copy2(video_clip, combined_path)
+            return combined_path
 
-        # Step 2: ken-burns tail
-        kb_path = _os.path.join(cfg.dirs["scenes"], f"scene_{scene.id:02d}_kbtail.mp4")
+        kb_path = _os.path.join(videos_dir, f"scene_{scene.id:02d}_kbtail.mp4")
         try:
             image_to_video_clip(
                 image_path=scene.image_paths[0], duration=image_secs,
@@ -486,11 +949,10 @@ def run_generation_render_pipeline(
                 effect=cycle_effect(scene.id + 1),
             )
         except Exception as e:
-            log(f"Image: Scene {scene.id} ken-burns tail failed ({e}) — video only")
-            _sh.copy2(video_clip, combined)
-            return combined
+            log(f"Image: Scene {scene.id} ken-burns tail failed ({e})")
+            _sh.copy2(video_clip, combined_path)
+            return combined_path
 
-        # Step 3: concat
         with _tf.NamedTemporaryFile(mode="w", suffix=".txt", delete=False,
                                     encoding="utf-8") as f:
             f.write(f"file '{_os.path.abspath(video_clip)}'\n")
@@ -500,7 +962,7 @@ def run_generation_render_pipeline(
             r = _sp.run([
                 "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path,
                 "-c:v", "libx264", "-preset", "fast", "-crf", "18",
-                "-pix_fmt", "yuv420p", "-an", combined,
+                "-pix_fmt", "yuv420p", "-an", combined_path,
             ], capture_output=True, text=True, timeout=120)
             _os.unlink(list_path)
             if r.returncode != 0:
@@ -508,12 +970,9 @@ def run_generation_render_pipeline(
         except Exception as e:
             try: _os.unlink(list_path)
             except Exception: pass
-            log(f"Image: Scene {scene.id} concat failed ({e}) — video only")
-            _sh.copy2(video_clip, combined)
-            return combined
+            _sh.copy2(video_clip, combined_path)
 
-        log(f"Image: Scene {scene.id} I2V upgrade ✓ → {combined}")
-        return combined
+        return combined_path
 
     # ── Video gen worker ──────────────────────────────────────────────────
     # Runs in a daemon thread per scene — polls Novita until done or timeout.

@@ -1,0 +1,177 @@
+style_id: tiktok-thriller
+display_name: "TikTok Catchy Thriller Story"
+target_duration_range: [0.75, 2.0]   # minutes
+scenes_per_minute: 3.5               # story beats — ~17s per scene
+
+# ── Auto-selection hints ──────────────────────────────────────────────────────
+auto_select_signals: |
+  Choose this style when:
+  - The topic has a real historical moment of discovery/invention/disruption
+  - A famous scientist, team, or institution is central to the story
+  - The topic involves a paradigm shift ("before X, everyone thought Y")
+  - The audience is general public, not specialists
+
+# ── Vocal palette ─────────────────────────────────────────────────────────────
+vocal_palette: |
+  AVAILABLE SOUNDS — embed directly in narration_text for Gemini TTS:
+    [pauses]   — before a date, a name, or a plot twist
+    oof        — when the old method failed or someone was wrong
+    huh        — after stating an ironic outcome, never before
+    wait       — mid-story pivot when the expected thing did not happen
+    I mean     — spoken filler that slows the pace at a tense moment
+    you know   — pulling the viewer into complicity with the story
+    like       — casual connector; makes the narrator feel human, not scripted
+
+  PLACEMENT RULE: sounds are reactions, not announcements.
+    ✓ "He published the proof. Nobody cited it for eleven years. huh."
+    ✗ "huh — isn't that interesting?"
+    ✓ "The committee rejected it. oof. Twice."
+    ✗ "oof — that must have been tough for him."
+
+  Maximum two sounds per scene. Never open a scene with one.
+  Never use more than one in the same sentence.
+
+# ── Narration tone ────────────────────────────────────────────────────────────
+narration_tone: |
+  You are a true-crime podcast narrator telling a science story.
+  Calm. Controlled. Letting the facts carry the tension.
+  You never editorialize — you report. The drama is in the events,
+  not in your reaction to them.
+
+  THE CORE DISCIPLINE:
+  Earn the drama. Every dramatic line must be preceded by a plain fact
+  that makes it inevitable. The listener should feel it coming one beat
+  before it lands.
+
+  FORBIDDEN PATTERNS — these are the marks of AI slop:
+    - Opening with an adjective: "incredible", "fascinating", "remarkable"
+    - Telling the viewer how to feel: "surprisingly", "shockingly", "amazingly"
+    - Vague time references: "long ago", "back then", "in the past"
+    - Vague scale: "many scientists", "most people", "the whole world"
+    - Meta-commentary: "this is a story about", "what happened next will"
+    - Rhetorical questions as hooks: "Have you ever wondered why..."
+
+  WHAT WORKS INSTEAD:
+    Specific year. Specific person. Specific place. Specific number.
+    Then the thing that happened. Then the consequence.
+    No decoration. No adjectives that do not earn their place.
+
+    ✗ "Back in the early 1900s, an amazing scientist made a shocking discovery."
+    ✓ "In 1905, Albert Einstein was 26 years old and working as a patent clerk.
+       He had no lab. No colleagues. No funding.
+       That year he published four papers. [pauses]
+       Any one of them would have made him famous."
+
+  IRONY is your secret weapon:
+    The best thriller moments are already in the facts — find the irony
+    and trust it.
+    ✓ "The paper that invented modern cryptography was classified top secret
+       for 27 years. The man who wrote it never got credit. you know."
+    ✓ "Boltzmann spent his career proving that atoms exist.
+       He died before anyone believed him. [pauses]
+       Three years later, Einstein proved he was right."
+
+  BRIDGE EVERY SCENE TO THE NEXT:
+    The last sentence of every scene except the final must create a specific
+    forward pull — name what is about to happen without revealing it.
+    The viewer must feel they CANNOT stop watching.
+    ✓ "...and every mathematician alive accepted it. [pauses]
+       Every mathematician, that is, except one."
+    ✗ "...Euclid's work was very influential." (dead end — no pull)
+
+  SENTENCE-LEVEL CAUSALITY — every sentence must follow causally from
+    the previous one. Never switch subjects without a bridging clause.
+    The story must feel like dominoes falling, not facts being recited.
+    ✓ "He published the proof. No one read it. [pauses]
+       So he published it again. This time the king had it burned."
+    ✗ "He published the proof. Gauss had been working on the same problem."
+       (hard subject switch — no bridge between these two facts)
+
+  CALLBACK LANGUAGE — pick 1-2 key phrases from the opening scene and
+    echo them verbatim in the closing scene. This creates the feeling of
+    a single coherent arc, not a list of historical events.
+
+# ── Thriller narrative arc formats ────────────────────────────────────────────
+narrative_arcs: |
+  SELECT ONE ARC before writing. Commit to it. State it in scene 1's
+  visual_hint so VisualDirector knows the emotional register.
+
+  ARC A — THE REVOLUTION:
+    "X was gold standard → something broke it → Y changed everything"
+    Opens on the world before. Ends on the world after. Contrast is everything.
+    Best for: Transformers replacing RNNs, Newton replaced by Einstein,
+              Ptolemy replaced by Copernicus
+
+  ARC B — THE OBSESSION:
+    "One person spent years failing → one moment cracked it open → then silence"
+    The protagonist carries the whole story. Their failure IS the tension.
+    Best for: Ramanujan, Turing, Curie, Shannon, Galois
+
+  ARC C — THE ACCIDENT:
+    "Nobody was looking for X → it appeared anyway → nobody believed it at first"
+    The irony is structural — the discovery resisted being found.
+    Best for: penicillin, cosmic microwave background, X-rays, Teflon
+
+  ARC D — THE WAR:
+    "Two theories fought for decades → one won → the loser was quietly right
+     about something nobody noticed until much later"
+    Tension comes from the reader knowing both sides had partial truth.
+    Best for: wave/particle duality, big bang vs steady state,
+              frequentist vs Bayesian statistics
+
+  ARC E — THE PROPHECY:
+    "Someone predicted X decades early → was dismissed → then it came true →
+     they could not be thanked"
+    The tragedy is built in. The viewer roots for someone who already lost.
+    Best for: Babbage, Tesla, Boltzmann, Semmelweis, Wegener
+
+  ARC F — THE RESURRECTION:
+    "X was discovered → forgotten → rediscovered when the world was ready"
+    Two timelines, one idea. The gap between them is the story.
+    Best for: backpropagation (1970 → 1986), Bayesian inference, LSTM
+
+# ── Script structure ──────────────────────────────────────────────────────────
+script_structure: |
+  For a 1-minute video: exactly 3-4 scenes.
+
+  Scene 1 (~15s): THE WORLD BEFORE
+    Specific year. Specific person or institution. One concrete detail
+    that anchors the era. End the scene one beat before everything changed.
+    Do NOT foreshadow. Do NOT say "little did they know."
+
+  Scene 2 (~20s): THE MOMENT
+    The thing that happened. Real event. Real place if possible.
+    Name it plainly. The facts are enough — no adjectives needed.
+    One number or date that reveals the scale.
+
+  Scene 3 (~15s): THE CONSEQUENCE
+    What changed. How fast. Who resisted and lost.
+    One concrete measure of the before/after gap.
+    ("Within 18 months, every major lab had abandoned the old method.")
+
+  Scene 4 (~10s): THE IRONY
+    One final line that recontextualizes everything.
+    Find the twist already in the facts — do not invent one.
+    ✓ "The paper that started it all fit on four pages."
+    ✓ "He never found out. He died in 1943, two years before the patent cleared."
+
+# ── Pacing rules ──────────────────────────────────────────────────────────────
+pacing: |
+  - Estimate 2.8 words/second for Gemini TTS
+  - [pauses] adds ~0.8s — use before names, dates, and ironic reversals
+  - Maximum 60 words per scene
+  - Historical names and numbers naturally slow the pace — lean into it
+  - The narrator stays calm even when the story is not
+  - Resist the urge to add "...and that changed everything" — show it instead
+
+tiktok_safe_zones: |
+  TOP ROW FORBIDDEN (y > +5.33): TikTok search bar — approximately top 130px.
+    All titles and text must sit at y ≤ +5.0. Use TITLE zone (row 1), not row 0.
+  LEFT EDGE FORBIDDEN (x < -3.5): Physical screen boundary — text clips off screen.
+    Always keep at least 0.5 units from the left. Use .to_edge(LEFT, buff=0.5).
+  RIGHT EDGE FORBIDDEN (x > +1.0):  Like / comment / share / follow buttons.
+    All content must sit at x ≤ +1.0. Never use cols 4-5.
+  BOTTOM ROW FORBIDDEN (y < -4.67): Username, song name, caption overlay.
+    All content must sit at y ≥ -4.0. Use LOWER_MAIN zone maximum.
+  SAFE BAND: x in [-3.5, +1.0], y in [-4.0, +5.0].
+    Titles: y ≈ +4.5. Main visual: y ≈ +1.0 to +3.5. Accent: y ≈ -3.0 maximum.
