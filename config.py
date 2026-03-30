@@ -186,8 +186,8 @@ class ProcExConfig:
     #   Male:   Charon, Fenrir, Orus, Puck
     # Fenrir is used for documentary [VOICE: X] paragraphs — deep, distinct male register
     gemini_tts_model:         str = "gemini-2.5-flash-preview-tts"
-    gemini_tts_voice:         str = "Aoede"    # narrator / story / technical
-    gemini_tts_voice_male:    str = "Fenrir"   # [VOICE: X] character paragraphs
+    gemini_tts_voice:         str = "Fenrir" # "Aoede"    # narrator / story / technical
+    gemini_tts_voice_male:    str = "Aoede" # "Fenrir"   # [VOICE: X] character paragraphs
 
     # ── TTS provider selection ────────────────
     # "gemini"  → Gemini 2.5 Flash TTS (default, uses GEMINI_API_KEY)

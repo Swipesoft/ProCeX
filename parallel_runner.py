@@ -56,10 +56,13 @@ _QUEUE_TIMEOUT = 0.25       # seconds to block on empty queue before re-checking
 I2V_UPGRADE_THRESHOLD = 8.0
 
 # Maximum number of image/video scenes processed concurrently.
-# Each image scene fires up to 3 parallel Novita I2V calls.
-# 3 scenes × 3 I2V calls = 9 concurrent connections → SSL pool exhaustion.
-# Capping at 3 scenes in flight limits peak Novita concurrency to a safe level.
-SCENE_CONCURRENCY_LIMIT = 3
+# Each image scene fires up to 4 parallel Novita I2V calls internally
+# (via ThreadPoolExecutor inside _try_i2v_upgrade).
+# 3 scenes × 4 I2V calls = 12 concurrent connections → SSL pool exhaustion.
+# 1 scene at a time: that scene's internal beats still run in parallel (fast),
+# but only one scene occupies the Novita connection pool at a time.
+# Manim coders are unaffected — they run 4 parallel workers regardless.
+SCENE_CONCURRENCY_LIMIT = 1
 
 
 @dataclass

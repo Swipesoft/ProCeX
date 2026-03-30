@@ -96,15 +96,14 @@ def _upgrade_opening_scene(state, cfg, llm):
     img_path = os.path.join(images_dir, f"scene_{first.id:02d}_opening_hook.png")
 
     try:
+        # Use the same google.genai client pattern as ImageGenAgent — NOT google.generativeai
         from google import genai as _genai_mod
         from google.genai import types as _types
-        import google.generativeai
 
-        genai_client = _genai_mod.Client(
-            api_key=os.environ.get("GEMINI_API_KEY", "")
-        )
+        genai_client = _genai_mod.Client(api_key=cfg.gemini_api_key)
+        # Use the same model as ImageGenAgent Pro tier (cfg.nano_fast_model)
         response = genai_client.models.generate_content(
-            model="gemini-2.0-flash-preview-image-generation",
+            model=cfg.nano_fast_model,   # "gemini-3.1-flash-image-preview"
             contents=opening_prompt,
             config=_types.GenerateContentConfig(
                 response_modalities=["image", "text"],
@@ -123,7 +122,12 @@ def _upgrade_opening_scene(state, cfg, llm):
                 saved = True
                 break
         if not saved:
-            raise RuntimeError("No image data returned")
+            finish = ""
+            try:
+                finish = str(response.candidates[0].finish_reason) if response.candidates else "no candidates"
+            except Exception:
+                pass
+            raise RuntimeError(f"No image data in response (finish_reason={finish})")
         print(f"[OpeningHook] Image generated → {os.path.basename(img_path)}")
     except Exception as e:
         print(f"[OpeningHook] Image generation failed ({e}) — keeping Manim clip")

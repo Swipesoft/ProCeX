@@ -10,7 +10,7 @@ from __future__ import annotations
 import re, os
 from typing import Optional
 
-DOCUMENTARY_VOICE_DEFAULT = os.environ.get("GEMINI_TTS_VOICE_MALE", "Fenrir")
+DOCUMENTARY_VOICE_DEFAULT = os.environ.get("GEMINI_TTS_VOICE_MALE", "Aoede") # "Fenrir"
 DOCUMENTARY_VOICE_MAP: dict[str, str] = {}
 DETECTION_MIN_LABELS = 3
 WORDS_PER_SECOND = 2.8
