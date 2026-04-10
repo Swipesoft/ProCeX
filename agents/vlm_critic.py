@@ -63,7 +63,21 @@ PATCH_MAX_TOKENS          = 16384
 VISION_MAX_TOKENS         = 16384
 KEYFRAME_OFFSETS          = [0.75, 0.88, 0.97]  # peak density window
 MAX_REROUTE_ATTEMPTS      = 2   # max times a scene can be sent back to VisualDirector
-REROUTE_DENSITY_THRESHOLD = 7   # density score >= this → reroute rather than patch
+
+# ── 5-point density rubric thresholds ────────────────────────────────────────
+# Score 1: elements completely off-screen / invisible        → reroute
+# Score 2: major collision, content lost / unreadable        → reroute
+# Score 3: moderate overlap, readable but degraded           → patch
+# Score 4: minor crowding, still legible                     → accept
+# Score 5: clean layout, no collisions                       → accept
+#
+# Old 10-point scale caused over-rejection (LLMs score randomly on wide scales).
+# 5-point scale with a detailed per-score rubric is more reliable.
+# When gemma_provider=True and image_gen is off, a rerouted scene has no
+# image fallback — so we only reroute on genuinely catastrophic layouts.
+REROUTE_DENSITY_THRESHOLD = 2   # score ≤ this → reroute (was 7/10, now 2/5)
+PATCH_DENSITY_THRESHOLD   = 3   # score == this → patch
+# score >= 4 → accept regardless of collision_detected flag
 
 
 # ── Result dataclass ──────────────────────────────────────────────────────────
@@ -123,11 +137,18 @@ Examine the annotated frame carefully.
    If the frame is simply too content-dense for one scene (>5 teaching points
    crammed into one view with no spatial resolution possible) → recommend split.
 
+Score the layout using this EXACT 5-point rubric — do not deviate:
+  5 = Perfectly clean. No overlaps, no truncation, all text readable.
+  4 = Minor crowding. Slight overlap between non-critical elements, still legible.
+  3 = Moderate overlap. Labels touch content, some text degraded but readable.
+  2 = Major collision. Text blocks fully occluding each other, content lost.
+  1 = Catastrophic. Elements off-screen, invisible, or completely illegible.
+
 Respond ONLY with this JSON schema:
 {{
   "collision_detected": true | false,
   "split_recommended":  true | false,
-  "density_score":      0-10,
+  "density_score":      1 | 2 | 3 | 4 | 5,
   "issues": [
     {{
       "element":    "<brief description of the colliding element>",
@@ -140,9 +161,9 @@ Respond ONLY with this JSON schema:
   "reasoning": "<one sentence summary>"
 }}
 
+If density_score >= 4, set collision_detected=false and issues=[].
 If collision_detected is false, issues must be an empty list.
-If split_recommended is true, still list whatever corrections would help even
-after splitting (the two sub-scenes will each benefit from the guidance).
+If split_recommended is true, still list corrections for each sub-scene.
 """
 
 PATCHER_SYSTEM = """\
@@ -181,6 +202,33 @@ ZONE COORDINATE LOOKUP
 
 Apply all corrections and return the complete corrected Python code.
 """
+
+
+# ── JSON schema for VLMCritic vision output (used by GemmaClient strict mode) ──
+_VISION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "collision_detected": {"type": "boolean"},
+        "split_recommended":  {"type": "boolean"},
+        "density_score":      {"type": "integer", "minimum": 1, "maximum": 5},
+        "issues": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "element":   {"type": "string"},
+                    "from_zone": {"type": "string"},
+                    "to_zone":   {"type": "string"},
+                    "action":    {"type": "string", "enum": ["move", "resize", "remove_overlap"]},
+                    "severity":  {"type": "string", "enum": ["critical", "moderate"]},
+                },
+                "required": ["element", "from_zone", "to_zone", "action", "severity"],
+            },
+        },
+        "reasoning": {"type": "string"},
+    },
+    "required": ["collision_detected", "split_recommended", "density_score", "issues", "reasoning"],
+}
 
 
 class VLMCritic(BaseAgent):
@@ -265,7 +313,7 @@ class VLMCritic(BaseAgent):
         collision = vision_result.get("collision_detected", False)
         self._log(
             f"Scene {scene.id}: Gemini result — "
-            f"collision={collision}, density={density}/10, reason='{reasoning}'"
+            f"collision={collision}, density={density}/5, reason='{reasoning}'"
         )
 
         if not collision:
@@ -311,7 +359,7 @@ class VLMCritic(BaseAgent):
         scene_split_depth = getattr(scene, "split_depth", 0)
 
         if scene_split_depth >= 1 and (
-            split_recommended or density_int >= REROUTE_DENSITY_THRESHOLD
+            split_recommended or density_int <= REROUTE_DENSITY_THRESHOLD
         ):
             peak_frame = frames[-1] if frames else None
             self._log(
@@ -326,7 +374,7 @@ class VLMCritic(BaseAgent):
             )
 
         should_reroute = (
-            split_recommended or density_int >= REROUTE_DENSITY_THRESHOLD
+            split_recommended or density_int <= REROUTE_DENSITY_THRESHOLD
         ) and reroute_attempts < MAX_REROUTE_ATTEMPTS
 
         if should_reroute:
@@ -336,7 +384,7 @@ class VLMCritic(BaseAgent):
             peak_frame = frames[-1] if frames else None
             self._log(
                 f"Scene {scene.id}: rerouting to VisualDirector "
-                f"(density={density}/10, attempts={reroute_attempts+1}/{MAX_REROUTE_ATTEMPTS})"
+                f"(density={density}/5, attempts={reroute_attempts+1}/{MAX_REROUTE_ATTEMPTS})"
             )
             return CriticResult(
                 status        = "reroute",
@@ -502,7 +550,7 @@ class VLMCritic(BaseAgent):
             worst = max(collisions, key=lambda x: x[1].get("density_score", 0))
             self._log(
                 f"Scene {scene.id}: collision found in frame {worst[0]+1}/{len(frames)} "
-                f"(density={worst[1].get('density_score','?')}/10)"
+                f"(density={worst[1].get('density_score','?')}/5)"
             )
             return worst[1]
 
@@ -526,6 +574,22 @@ class VLMCritic(BaseAgent):
         )
 
         try:
+            # ── Gemma path: native Part.from_bytes + strict JSON schema ──────
+            if getattr(self.cfg, "gemma_provider", False):
+                from utils.gemma_client import GemmaClient as _GC
+                if isinstance(self.llm, _GC):
+                    result = self.llm.complete_vision_json(
+                        system_prompt = VISION_SYSTEM,
+                        user_prompt   = user_prompt,
+                        image_bytes   = frame_bytes,
+                        image_mime    = "image/jpeg",
+                        max_tokens    = VISION_MAX_TOKENS,
+                        temperature   = 0.1,
+                        schema        = _VISION_SCHEMA,
+                    )
+                    return result if isinstance(result, dict) else None
+
+            # ── Gemini/Claude path: soft parsing ──────────────────────────────
             raw = self.llm.complete_vision(
                 system_prompt    = VISION_SYSTEM,
                 user_prompt      = user_prompt,

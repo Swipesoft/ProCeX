@@ -1,6 +1,6 @@
 domain: ML_MATH
 display_name: "Machine Learning & Mathematics"
-image_gen_enabled: true  # semantic reasoning gate
+image_gen_enabled: false  # semantic reasoning gate
 
 # Default visual strategy for most scenes
 default_visual_strategy: MANIM
@@ -8,7 +8,7 @@ image_gen_triggers: []   # ML/Math never uses IMAGE_GEN — always Manim
 
 script_instructions: |
   Write with mathematical precision. Define all notation before using it.
-  Build concepts from first principles — assume an intelligent but non-specialist audience.
+  Build concepts from first principles — assume an intelligent but specialist audience.
   Each scene should introduce ONE core idea, then show it from multiple angles.
   Use analogies from physics or engineering where helpful.
   Prefer active voice: "the gradient points uphill" over "the gradient is pointed uphill".

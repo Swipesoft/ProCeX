@@ -94,6 +94,17 @@ Examples:
             "'documentary' = Netflix-style multi-voice documentary with Tavily web search."
         )
     )
+    parser.add_argument(
+        "--provider",
+        type=str,
+        choices=["gemma"],
+        default=None,
+        help=(
+            "LLM provider override. 'gemma' activates Gemma 4 31B end-to-end "
+            "(research mode only). All agents except TTS route through Gemma. "
+            "Image generation is disabled. Resolution forced to 1080p landscape."
+        )
+    )
 
     args = parser.parse_args()
 
@@ -103,6 +114,9 @@ Examples:
 
     if args.mode and args.input:
         parser.error("--mode and --input are mutually exclusive. Use --mode for research/documentary, --input for PDF teaching.")
+
+    if getattr(args, "provider", None) == "gemma" and args.mode == "documentary":
+        parser.error("--provider gemma is only supported with --mode research (not documentary).")
 
     if args.input and not os.path.exists(args.input):
         parser.error(f"Input file not found: {args.input}")
@@ -116,6 +130,20 @@ Examples:
     from orchestrator import ProcExOrchestrator
 
     cfg = ProcExConfig(output_root=args.output_dir, presentation_style=args.style)
+
+    # ── Gemma provider mode ───────────────────────────────────────────────────
+    if getattr(args, "provider", None) == "gemma":
+        cfg.gemma_provider = True
+        # Force landscape 1080p — portrait has too many layout constraints
+        # that can cause over-rejection in VLMCritic when image_gen is off.
+        if args.resolution.endswith("_v"):
+            print("[ProcEx] ℹ Gemma mode: portrait resolution overridden → 1080p")
+            args.resolution = "1080p"
+        print("[ProcEx] 🟣 Gemma 4 31B mode active")
+        print("[ProcEx]   • All text/vision/code agents → gemma-4-31b-it")
+        print("[ProcEx]   • Image generation → disabled")
+        print("[ProcEx]   • TTS → Gemini (unchanged)")
+        print("[ProcEx]   • Research → agentic Tavily function-calling loop")
 
     print(f"""
 ╔══════════════════════════════════════════════════════════╗

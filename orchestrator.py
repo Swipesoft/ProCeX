@@ -19,6 +19,7 @@ import time
 from state import ProcExState, InputType, VisualStrategy
 from config import ProcExConfig
 from utils.llm_client import LLMClient
+from utils.gemma_client import GemmaClient
 from utils.slug import slugify
 from utils.pdf_parser import extract_pdf_text
 
@@ -243,7 +244,11 @@ class ProcExOrchestrator:
     def __init__(self, cfg: ProcExConfig | None = None):
         self.cfg = cfg or ProcExConfig()
         self.cfg.make_dirs()
-        self.llm = LLMClient(self.cfg)
+        if getattr(self.cfg, 'gemma_provider', False):
+            self.llm = GemmaClient(self.cfg)
+            print('[ProcEx] 🟣 Gemma 4 31B mode active — GemmaClient initialised')
+        else:
+            self.llm = LLMClient(self.cfg)
 
     def run(
         self,
@@ -255,6 +260,16 @@ class ProcExOrchestrator:
         presentation_style: str = "auto",
     ) -> str:
         start_time = time.time()
+
+        # ── Gemma provider overrides ──────────────────────────────────────────
+        if getattr(self.cfg, "gemma_provider", False):
+            # Force landscape 1080p — avoids portrait layout constraints
+            # that cause over-rejection in VLMCritic when image_gen is off
+            if resolution.endswith("_v"):
+                print(f"[ProcEx] Gemma mode: {resolution} → 1080p (portrait overridden)")
+                resolution = "1080p"
+            # Image generation requires Gemini imagen — disabled for Gemma run
+            self.cfg.enable_critic_loop = True   # critic still runs (Gemma vision)
 
         # ── Load or create state ──────────────────────────────────────────
         if resume_checkpoint and os.path.exists(resume_checkpoint):
@@ -285,6 +300,22 @@ class ProcExOrchestrator:
             )
         else:
             state = self._run_agent("ScriptWriter", state)
+
+        # ════════════════════════════════════════════════════════════════
+        # Stage 2.5 — SlopRefiner  [sequential, post-script pre-TTS]
+        # Detects and corrects slop patterns in scene.narration_text.
+        # Two-pass: regex pre-filter → LLM correction for flagged scenes only.
+        # Recalculates scene.duration_seconds after any rewrite.
+        # Skipped if TTSAgent already done (resume path).
+        # ════════════════════════════════════════════════════════════════
+        if not self._stage_done(state, "TTSAgent") and state.scenes:
+            try:
+                from utils.slop_refiner import refine_scenes
+                print("\n[ProcEx] ▶ Running SlopRefiner...")
+                state = refine_scenes(state, self.llm, self.cfg)
+                print("[ProcEx] ✓ SlopRefiner done")
+            except Exception as _slop_err:
+                print(f"[ProcEx] ⚠ SlopRefiner failed ({_slop_err}) — continuing with original narration")
 
         # ════════════════════════════════════════════════════════════════
         # Stage 3 — TTSAgent ∥ VisualDirector  [parallel A]
@@ -336,11 +367,21 @@ class ProcExOrchestrator:
         # to an animated video (I2V) or at minimum a cinematic image with
         # ken-burns. This gives every video a live-motion opening frame that
         # captures viewers before they scroll away.
+        # Skipped when image_gen is disabled (Gemma mode / ML domain) because
+        # the hook requires Gemini image generation which is unavailable.
         # ════════════════════════════════════════════════════════════════
-        try:
-            _upgrade_opening_scene(state, self.cfg, self.llm)
-        except Exception as _e:
-            print(f"[ProcEx] Opening hook upgrade failed (non-critical): {_e}")
+        _image_gen_allowed = (
+            not getattr(self.cfg, "gemma_provider", False)
+            and getattr(self.cfg, "image_gen_enabled", True)
+            and state.skill_pack.get("image_gen_enabled", True)
+        )
+        if _image_gen_allowed:
+            try:
+                _upgrade_opening_scene(state, self.cfg, self.llm)
+            except Exception as _e:
+                print(f"[ProcEx] Opening hook upgrade failed (non-critical): {_e}")
+        else:
+            print("[ProcEx] ↩ Skipping opening hook upgrade (image generation disabled)")
 
         # ════════════════════════════════════════════════════════════════
         # Stage 5 — AssemblerAgent  [sequential]
@@ -369,7 +410,14 @@ class ProcExOrchestrator:
             return state
 
         agent_class = self._agent_class(agent_name)
-        agent       = agent_class(self.cfg, self.llm)
+
+        # TTSAgent always uses Gemini TTS regardless of provider —
+        # Gemma cannot generate audio. Swap back to LLMClient for TTS.
+        if getattr(self.cfg, "gemma_provider", False) and agent_name == "TTSAgent":
+            tts_llm = LLMClient(self.cfg)
+            agent   = agent_class(self.cfg, tts_llm)
+        else:
+            agent   = agent_class(self.cfg, self.llm)
 
         print(f"\n[ProcEx] ▶ Running {agent_name}...")
         try:

@@ -1404,10 +1404,18 @@ def run_generation_render_pipeline(
         t.start()
 
     # ── Launch coder workers ──────────────────────────────────────────────
-
-    n_coders    = max(1, min(len(state.scenes), cfg.coder_workers))
+    # In Gemma mode, serialise to 1 coder thread to prevent all coders from
+    # simultaneously piling into the TPM throttler. Each ManimCoder call
+    # already waits for the window to clear — multiple threads just multiply
+    # the wait contention without gaining any throughput.
+    # Non-Gemma mode uses cfg.coder_workers (default 4) unchanged.
+    _gemma_mode = getattr(cfg, "gemma_provider", False)
+    n_coders    = 1 if _gemma_mode else max(1, min(len(state.scenes), cfg.coder_workers))
     n_renderers = max(1, min(total_scenes[0], cfg.render_workers))
     threads     = []
+
+    if _gemma_mode:
+        print(f"[Parallel] Gemma mode: serialised to 1 coder thread (TPM throttle)")
 
     for i in range(n_coders):
         t = threading.Thread(target=coder_worker, args=(i+1,), name=f"Coder-{i+1}")

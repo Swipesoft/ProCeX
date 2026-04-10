@@ -194,8 +194,14 @@ class DeepResearchAgent(BaseAgent):
     def research(self, topic: str, target_minutes: float = 5.0) -> str:
         """
         Run the full research pipeline for the given topic.
-        Returns the path to the output PDF in papers/.
+        When cfg.gemma_provider=True, uses Gemma 4 31B agentic function-calling
+        loop for web research (reusing DeepDocumentaryAgent's Tavily client).
+        Returns path to the output PDF in papers/.
         """
+        # ── Gemma path: agentic research replaces Stage 1+2 ─────────────────
+        if getattr(self.cfg, "gemma_provider", False):
+            return self._research_gemma(topic, target_minutes)
+
         import time as _time
         t0         = _time.time()
         slug       = slugify(topic)
@@ -456,6 +462,343 @@ class DeepResearchAgent(BaseAgent):
             prompt = prompt.rstrip(". ") + ". " + ". ".join(additions) + "."
         return prompt
 
+
+    # ── Gemma 4 agentic research loop ────────────────────────────────────────
+
+    def _research_gemma(self, topic: str, target_minutes: float) -> str:
+        """
+        Agentic research using Gemma 4 31B native function-calling.
+
+        Gemma autonomously decides when to search, what to search, and when it
+        has enough to write. Reuses DeepDocumentaryAgent._get_tavily() so no
+        new search infrastructure is needed.
+
+        Returns path to a PDF consumable by the rest of the ProcEx pipeline.
+        """
+        import time as _time
+        from utils.slug import slugify
+        from agents.deep_documentary import DeepDocumentaryAgent
+
+        t0   = _time.time()
+        slug = slugify(topic)
+        self._log(f"[Gemma] Agentic research mode — topic: {topic!r}")
+
+        # Borrow the Tavily client from DeepDocumentaryAgent
+        doc_agent = DeepDocumentaryAgent(self.cfg, self.llm)
+        tavily    = doc_agent._get_tavily()
+
+        # Tavily search function declaration — Gemma calls this as a tool
+        TAVILY_FN = {
+            "name": "tavily_search",
+            "description": (
+                "Search the web for factual information. Use this to gather "
+                "historical facts, scientific explanations, biographical details, "
+                "and key concepts. Call as many times as needed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Focused 3-10 word search query.",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Why this search fills a knowledge gap.",
+                    },
+                },
+                "required": ["query"],
+            },
+        }
+
+        n_words = int(target_minutes * 150)
+        SYSTEM = (
+            f"You are a world-class documentary researcher and writer. "
+            f"Your task: research the topic thoroughly using tavily_search, "
+            f"then write a complete {target_minutes}-minute educational script "
+            f"(~{n_words} words). \n\n"
+            f"RESEARCH PHASE: Search multiple times — start broad, then dig into "
+            f"key figures, historical context, surprising facts, controversies. "
+            f"Stop searching when you have comprehensive coverage (5-10 searches).\n\n"
+            f"WRITING PHASE: After enough research, write the full script WITHOUT "
+            f"calling any more tools. Structure: compelling hook → historical context "
+            f"→ core concept explained clearly → key controversy or insight → modern "
+            f"implications → memorable conclusion. "
+            f"Write cinematically: specific names, dates, facts from your research."
+        )
+
+        USER = (
+            f"Research and write a complete {target_minutes}-minute educational "
+            f"script about: {topic}"
+        )
+
+        # Agentic loop — Gemma drives the conversation
+        MAX_ITERATIONS = 15
+        conversation   = [{"role": "user", "text": USER}]
+        search_count   = 0
+        research_log   = []
+        final_script   = None
+
+        for iteration in range(MAX_ITERATIONS):
+            self._log(
+                f"[Gemma] Iteration {iteration+1}/{MAX_ITERATIONS} "
+                f"(searches done: {search_count})"
+            )
+
+            result = self.llm.complete_with_tool_result(
+                system_prompt         = SYSTEM,
+                conversation          = conversation,
+                function_declarations = [TAVILY_FN],
+                max_tokens            = 16000,
+                temperature           = 0.3,
+            )
+
+            if result["type"] == "text":
+                # Gemma stopped calling tools — this is the finished script
+                final_script = result["text"]
+                self._log(
+                    f"[Gemma] Research complete — {search_count} searches, "
+                    f"{len(final_script.split())} words written"
+                )
+                break
+
+            elif result["type"] == "function_call" and result["name"] == "tavily_search":
+                query  = result["args"].get("query", "").strip()
+                reason = result["args"].get("reason", "")
+                if not query:
+                    self._log("[Gemma] Empty search query — stopping")
+                    break
+
+                self._log(f"[Gemma]   Search {search_count+1}: {query!r} — {reason}")
+
+                try:
+                    raw      = tavily.search(
+                        query        = query,
+                        search_depth = "basic",
+                        max_results  = 5,
+                    )
+                    results  = raw.get("results", [])
+                    snippets = [
+                        f"[{r.get('title','')}] {r.get('content','')[:600]}"
+                        for r in results if r.get("content")
+                    ]
+                    answer       = raw.get("answer", "")
+                    tool_response = (
+                        (f"Answer: {answer}\n\n" if answer else "")
+                        + "\n\n".join(snippets[:5])
+                    )
+                    search_count += 1
+                    research_log.append(f"Q: {query}\nA: {tool_response[:400]}")
+                    self._log(
+                        f"[Gemma]     → {len(snippets)} results"
+                    )
+                except Exception as e:
+                    tool_response = f"Search failed: {e}"
+                    self._log(f"[Gemma]   Tavily error: {e}")
+
+                # Append model turn + tool result to conversation history
+                conversation.append({
+                    "role": "model",
+                    "function_call": {
+                        "name": "tavily_search",
+                        "args": result["args"],
+                    },
+                })
+                conversation.append({
+                    "role": "tool",
+                    "function_response": {
+                        "name":     "tavily_search",
+                        "response": {"result": tool_response},
+                    },
+                })
+            else:
+                self._log(f"[Gemma] Unexpected result: {result}")
+                break
+
+        if not final_script:
+            self._log("[Gemma] No script produced — falling back to standard path")
+            return self._research_gemma_fallback(topic, target_minutes)
+
+        # Assemble Gemma script into PDF
+        papers_dir = "papers"
+        os.makedirs(papers_dir, exist_ok=True)
+        pdf_path = os.path.join(papers_dir, f"{slug}_gemma.pdf")
+        self._assemble_gemma_pdf(
+            topic      = topic,
+            script     = final_script,
+            search_log = research_log,
+            pdf_path   = pdf_path,
+        )
+        elapsed = _time.time() - t0
+        self._log(f"[Gemma] Done in {elapsed:.1f}s — PDF: {pdf_path}")
+        return pdf_path
+
+    def _research_gemma_fallback(self, topic: str, target_minutes: float) -> str:
+        """Temporarily disable Gemma mode and run standard research as fallback."""
+        self._log("[Gemma] Falling back to standard DeepResearch path...")
+        self.cfg.gemma_provider = False
+        try:
+            return self.research(topic, target_minutes)
+        finally:
+            self.cfg.gemma_provider = True
+
+    def _assemble_gemma_pdf(
+        self,
+        topic:      str,
+        script:     str,
+        search_log: list[str],
+        pdf_path:   str,
+    ) -> None:
+        """
+        Assemble a Gemma script string into a properly formatted A4 PDF.
+
+        Strips markdown artifacts (**, *, #, [SECTION] headers) and renders
+        clean prose with the same academic style as the standard DeepResearch
+        PDF — title, abstract-style intro, section headings, body text.
+        """
+        import re as _re
+        from datetime import datetime
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import cm
+        from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
+        from reportlab.lib import colors
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer, HRFlowable, KeepTogether
+        )
+
+        # ── Custom styles ────────────────────────────────────────────────
+        base   = getSampleStyleSheet()
+        styles = {
+            "title": ParagraphStyle(
+                "GemmaTitle",
+                parent    = base["Title"],
+                fontSize  = 22,
+                leading   = 28,
+                alignment = TA_CENTER,
+                spaceAfter= 6,
+            ),
+            "meta": ParagraphStyle(
+                "GemmaMeta",
+                parent    = base["Normal"],
+                fontSize  = 9,
+                textColor = colors.HexColor("#666666"),
+                alignment = TA_CENTER,
+                spaceAfter= 4,
+            ),
+            "heading": ParagraphStyle(
+                "GemmaHeading",
+                parent      = base["Heading2"],
+                fontSize    = 13,
+                leading     = 18,
+                spaceBefore = 14,
+                spaceAfter  = 4,
+                textColor   = colors.HexColor("#1a1a2e"),
+            ),
+            "body": ParagraphStyle(
+                "GemmaBody",
+                parent    = base["BodyText"],
+                fontSize  = 11,
+                leading   = 17,
+                alignment = TA_JUSTIFY,
+                spaceAfter= 6,
+            ),
+            "source": ParagraphStyle(
+                "GemmaSource",
+                parent    = base["Normal"],
+                fontSize  = 8,
+                textColor = colors.HexColor("#555555"),
+                spaceAfter= 3,
+            ),
+        }
+
+        doc = SimpleDocTemplate(
+            pdf_path,
+            pagesize    = A4,
+            leftMargin  = 2.5*cm, rightMargin = 2.5*cm,
+            topMargin   = 2.5*cm, bottomMargin= 2.5*cm,
+        )
+        story = []
+
+        # ── Title block ──────────────────────────────────────────────────
+        story.append(Paragraph(topic.title(), styles["title"]))
+        story.append(Paragraph(
+            f"Generated by Gemma 4 31B · {datetime.now().strftime('%B %d, %Y')} · "
+            f"{len(search_log)} web searches",
+            styles["meta"],
+        ))
+        story.append(Spacer(1, 0.3*cm))
+        story.append(HRFlowable(width="100%", thickness=1.5,
+                                color=colors.HexColor("#1a1a2e")))
+        story.append(Spacer(1, 0.4*cm))
+
+        # ── Strip markdown artifacts from script ─────────────────────────
+        def clean_markdown(text: str) -> str:
+            # Remove bold/italic markers
+            text = _re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+            text = _re.sub(r"\*([^*]+)\*",       r"\1", text)
+            # Remove inline code
+            text = _re.sub(r"`([^`]+)`", r"\1", text)
+            # Remove markdown headers (##, ###, etc.) — we handle them below
+            text = _re.sub(r"^#{1,4}\s+", "", text, flags=_re.MULTILINE)
+            # Remove leading ** from section labels like **NARRATOR:**
+            text = _re.sub(r"^\*{1,2}([A-Z][^*:]+):\*{0,2}\s*", r"\1: ", text, flags=_re.MULTILINE)
+            # Remove timestamp markers like **(0:00-0:20) [HOOK]**
+            text = _re.sub(r"\*{0,2}\(\d+:\d+-\d+:\d+\)[^*\n]*\*{0,2}", "", text)
+            # Remove [SECTION LABEL] markers standing alone on a line
+            text = _re.sub(r"^\[[A-Z][A-Z ]+\]\s*$", "", text, flags=_re.MULTILINE)
+            # Remove "Visual: ..." stage directions in parentheses/asterisks
+            text = _re.sub(r"\*{0,2}\(Visual:[^)]+\)\*{0,2}", "", text)
+            # Collapse 3+ blank lines to 2
+            text = _re.sub(r"\n{3,}", "\n\n", text)
+            return text.strip()
+
+        script_clean = clean_markdown(script)
+
+        # ── Parse into paragraphs, detect section headings ───────────────
+        # Heuristic: a paragraph is a heading if it is ALL CAPS or ends with ":"
+        # and is under 80 chars and has no full stop.
+        def is_heading(para: str) -> bool:
+            p = para.strip()
+            if len(p) > 100 or "." in p:
+                return False
+            if p.upper() == p and len(p) > 4:
+                return True   # ALL CAPS
+            if p.endswith(":") and len(p.split()) <= 8:
+                return True   # "Section Name:"
+            # [BRACKET LABEL] style
+            if _re.match(r"^\[[A-Z][^\]]+\]$", p):
+                return True
+            return False
+
+        paras = [p.strip() for p in script_clean.split("\n\n") if p.strip()]
+        for para in paras:
+            if is_heading(para):
+                clean_head = _re.sub(r"[\[\]:]", "", para).strip().title()
+                story.append(KeepTogether([
+                    Paragraph(clean_head, styles["heading"]),
+                    HRFlowable(width="100%", thickness=0.5,
+                               color=colors.HexColor("#cccccc")),
+                    Spacer(1, 0.1*cm),
+                ]))
+            else:
+                story.append(Paragraph(para, styles["body"]))
+
+        # ── Research sources ─────────────────────────────────────────────
+        if search_log:
+            story.append(Spacer(1, 0.8*cm))
+            story.append(HRFlowable(width="100%", thickness=1,
+                                    color=colors.HexColor("#cccccc")))
+            story.append(Spacer(1, 0.3*cm))
+            story.append(Paragraph("Research Sources", styles["heading"]))
+            for i, entry in enumerate(search_log, 1):
+                # Show only the query part (before the newline)
+                query_line = entry.split("\n")[0].replace("Q: ", "").strip()
+                story.append(Paragraph(f"{i}.  {query_line}", styles["source"]))
+
+        doc.build(story)
+        self._log(f"[Gemma] PDF assembled: {pdf_path}")
+
     # ── Stage 4: PDF assembly ─────────────────────────────────────────────────
 
     def _assemble_pdf(self, plan: ResearchPlan, output_path: str, topic: str) -> None:
@@ -665,4 +1008,3 @@ def _split_paragraphs(prose: str) -> list[str]:
     """Split prose into non-empty paragraphs on blank lines."""
     paras = re.split(r"\n{2,}", prose.strip())
     return [p.replace("\n", " ").strip() for p in paras if p.strip()]
-

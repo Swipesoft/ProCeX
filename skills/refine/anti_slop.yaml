@@ -1,0 +1,67 @@
+# skills/refine/anti_slop.yaml
+# AntiSlopBiotic — pattern definitions for the SlopRefiner agent.
+#
+# Applied globally after ScriptWriter / documentary-parser, before TTSAgent.
+# Each pattern has a compact remedy used in the LLM correction prompt and
+# a regex_hint used by the fast pre-filter to decide which scenes need LLM work.
+#
+# Keep remedy lines short — they are injected verbatim into the LLM prompt.
+# The full examples are here for human reference only (not sent to LLM).
+
+anti_slop_biotics:
+
+  - id: 1
+    name: "Em-dash overuse"
+    remedy: "Replace em dashes mid-sentence with parentheses or restructure the sentence."
+    regex_hint: " — "
+    example_bad:  "The model performed well — better than expected — on the benchmark."
+    example_good: "The model performed well (better than expected) on the benchmark."
+
+  - id: 2
+    name: "X didn't just do Y trope"
+    remedy: "Split 'X didn't just do Y, they did Z' into two sentences with natural pacing."
+    regex_hint: "didn't just|did not just"
+    example_bad:  "She didn't just finish the project, she finished it and redesigned the workflow."
+    example_good: "Most people would have stopped at finishing the project. She went further and redesigned the workflow."
+
+  - id: 3
+    name: "Town-crier hype cadence"
+    remedy: "Replace proclamation-style hype with a grounded personal reaction or meaningful context."
+    regex_hint: "(?i)(wildest part|plot twist|mind-blowing|game.changer|revolutionary)"
+    example_bad:  "And the wildest part? It runs on a single GPU."
+    example_good: "What makes this genuinely impressive is that it runs on a single GPU."
+
+  - id: 4
+    name: "Negative-only phrase stacks"
+    remedy: "Turn clipped negative fragments into a single full sentence."
+    regex_hint: "\\. No [A-Z]|No [A-Za-z]+\\. No [A-Za-z]"
+    example_bad:  "No fuel. No gas. Just solar energy."
+    example_good: "The system runs entirely on solar energy, without relying on fuel or gas."
+
+  - id: 5
+    name: "Unlinked adjacent sentences"
+    remedy: "Add a conjunction or adverbial phrase to connect sentences that share a logical relationship."
+    regex_hint: "(?<=[a-z]\\.) [A-Z][a-z]+ also "
+    example_bad:  "The model improved accuracy. Latency also dropped."
+    example_good: "The model improved accuracy. As a result, latency also dropped."
+
+  - id: 6
+    name: "High-probability token addiction"
+    remedy: "Replace generic buzzwords (delve, state-of-the-art, frontier-level, groundbreaking) with specific, concrete language."
+    regex_hint: "(?i)(delve|state-of-the-art|frontier.level|groundbreaking|paradigm.shift|unlock)"
+    example_bad:  "This state-of-the-art system delves into frontier-level performance."
+    example_good: "This system examines its limitations and still delivers superior performance."
+
+  - id: 7
+    name: "Throat-clearing opener"
+    remedy: "Cut openers that restate the topic before saying anything ('In this video we will...', 'Today we explore...'). Start with the substance."
+    regex_hint: "(?i)^(in this (video|scene)|today we (will|explore|look at)|we (will|are going to) (explore|discuss|look at))"
+    example_bad:  "In this video we will explore the attention mechanism."
+    example_good: "Every modern language model relies on the same trick: attention."
+
+  - id: 8
+    name: "Filler transition phrases"
+    remedy: "Remove empty transitions ('Having said that', 'With that in mind', 'It's worth noting that'). Start the next sentence directly."
+    regex_hint: "(?i)(having said that|with that in mind|it('s| is) worth noting|needless to say)"
+    example_bad:  "Having said that, the results were still impressive."
+    example_good: "The results were still impressive."

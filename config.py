@@ -187,12 +187,22 @@ class ProcExConfig:
     # Fenrir is used for documentary [VOICE: X] paragraphs — deep, distinct male register
     gemini_tts_model:         str = "gemini-2.5-flash-preview-tts"
     gemini_tts_voice:         str = "Fenrir" # "Aoede"    # narrator / story / technical
-    gemini_tts_voice_male:    str = "Aoede" # "Fenrir"   # [VOICE: X] character paragraphs
+    gemini_tts_voice_male:    str = "Fenrir" #"Aoede" # "Fenrir"   # [VOICE: X] character paragraphs
 
     # ── TTS provider selection ────────────────
     # "gemini"  → Gemini 2.5 Flash TTS (default, uses GEMINI_API_KEY)
     # "openai"  → OpenAI TTS (fallback, uses OPENAI_API_KEY)
     tts_provider:        str = "gemini"
+
+    # ── Gemma 4 provider mode ─────────────────────────────────────────────────
+    # When gemma_provider=True (set by --provider gemma in main.py):
+    #   • GemmaClient replaces LLMClient for all text/vision/code agents
+    #   • image_gen_enabled forced False (Gemma cannot generate images)
+    #   • resolution forced to 1080p landscape (avoids portrait layout rejection)
+    #   • TTSAgent stays on Gemini TTS (audio generation unchanged)
+    #   • DeepResearch uses Gemma native function-calling with Tavily tool
+    gemma_provider:      bool = False
+    gemma_model:         str  = "gemma-4-31b-it"
 
     # ── Presentation style ────────────────────────────────────────────────────
     # "auto"            → LLM selects based on topic + domain + duration
