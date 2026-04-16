@@ -145,9 +145,9 @@ Stage A (TTSAgent + VisualDirector) and Stage B (ManimCoder + Render + Critic) r
 | ScriptWriter | Gemma 4 31B | Claude → Gemini → GPT-4o |
 | VisualDirector | Gemma 4 31B | Gemini → Claude |
 | ManimCoder | Gemma 4 31B | Claude → Gemini |
-| SlopRefiner | Claude | Claude |
+| SlopRefiner | Gemma 4 31B | Claude |
 | TTSAgent | Gemini TTS (always) | Gemini TTS |
-| VLMCritic | Gemini Vision | Gemini Vision |
+| VLMCritic | Gemma 4 31B | Gemini Vision |
 | Image generation | Disabled | Gemini Imagen |
 | Video generation | Disabled | Novita Seedance |
 
@@ -476,6 +476,6 @@ python flush_output.py --yes
 
 ## License
 
-MIT — see `LICENSE` file.
+Apache 2.0 — see `LICENSE` file.
 
 Built by [Swipesoft](https://github.com/Swipesoft) · Submitted to Gemma 4 Good Hackathon 2026
