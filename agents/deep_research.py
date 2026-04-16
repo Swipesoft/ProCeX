@@ -191,16 +191,22 @@ class DeepResearchAgent(BaseAgent):
 
     # ── Public entry point ────────────────────────────────────────────────────
 
-    def research(self, topic: str, target_minutes: float = 5.0) -> str:
+    def research(
+        self,
+        topic:          str,
+        target_minutes: float = 5.0,
+        context:        str   = "",
+    ) -> str:
         """
         Run the full research pipeline for the given topic.
         When cfg.gemma_provider=True, uses Gemma 4 31B agentic function-calling
         loop for web research (reusing DeepDocumentaryAgent's Tavily client).
+        context: optional perspective/audience/scope string passed from --context CLI flag.
         Returns path to the output PDF in papers/.
         """
         # ── Gemma path: agentic research replaces Stage 1+2 ─────────────────
         if getattr(self.cfg, "gemma_provider", False):
-            return self._research_gemma(topic, target_minutes)
+            return self._research_gemma(topic, target_minutes, context=context)
 
         import time as _time
         t0         = _time.time()
@@ -465,13 +471,22 @@ class DeepResearchAgent(BaseAgent):
 
     # ── Gemma 4 agentic research loop ────────────────────────────────────────
 
-    def _research_gemma(self, topic: str, target_minutes: float) -> str:
+    def _research_gemma(
+        self,
+        topic:          str,
+        target_minutes: float,
+        context:        str = "",
+    ) -> str:
         """
         Agentic research using Gemma 4 31B native function-calling.
 
         Gemma autonomously decides when to search, what to search, and when it
         has enough to write. Reuses DeepDocumentaryAgent._get_tavily() so no
         new search infrastructure is needed.
+
+        context: teaching perspective/audience/scope from --context CLI flag.
+                 Injected into the system prompt so Gemma focuses research and
+                 writing on the specified angle, not a random one.
 
         Returns path to a PDF consumable by the rest of the ProcEx pipeline.
         """
@@ -512,19 +527,37 @@ class DeepResearchAgent(BaseAgent):
         }
 
         n_words = int(target_minutes * 150)
+
+        # Build context block — injected prominently so Gemma focuses on the
+        # specified perspective/audience rather than choosing one arbitrarily.
+        context_block = ""
+        if context and context.strip():
+            context_block = (
+                f"\n\nTEACHING CONTEXT (CRITICAL — read before researching or writing):\n"
+                f"{context.strip()}\n"
+                f"This context defines your audience, their prior knowledge, the exact "
+                f"sub-topic scope, and what to exclude. Every search query and every "
+                f"paragraph of the final script must align with this context.\n"
+                f"END TEACHING CONTEXT\n"
+            )
+
         SYSTEM = (
             f"You are a world-class documentary researcher and writer. "
             f"Your task: research the topic thoroughly using tavily_search, "
             f"then write a complete {target_minutes}-minute educational script "
-            f"(~{n_words} words). \n\n"
+            f"(~{n_words} words). "
+            f"{context_block}\n"
             f"RESEARCH PHASE: Search multiple times — start broad, then dig into "
             f"key figures, historical context, surprising facts, controversies. "
+            f"Every search must serve the teaching context above. "
             f"Stop searching when you have comprehensive coverage (5-10 searches).\n\n"
             f"WRITING PHASE: After enough research, write the full script WITHOUT "
-            f"calling any more tools. Structure: compelling hook → historical context "
-            f"→ core concept explained clearly → key controversy or insight → modern "
-            f"implications → memorable conclusion. "
-            f"Write cinematically: specific names, dates, facts from your research."
+            f"calling any more tools. Structure: compelling hook → core concept "
+            f"explained clearly → key insight or worked example → practical application "
+            f"→ memorable conclusion. "
+            f"Write for the specific audience described in the teaching context. "
+            f"Adhere strictly to the scope (inclusions and exclusions) defined there. "
+            f"\n\nREMINDER OF TEACHING CONTEXT:\n{context.strip() if context else 'None provided.'}"
         )
 
         USER = (
@@ -533,7 +566,7 @@ class DeepResearchAgent(BaseAgent):
         )
 
         # Agentic loop — Gemma drives the conversation
-        MAX_ITERATIONS = 15
+        MAX_ITERATIONS = 3
         conversation   = [{"role": "user", "text": USER}]
         search_count   = 0
         research_log   = []
@@ -547,7 +580,7 @@ class DeepResearchAgent(BaseAgent):
 
             result = self.llm.complete_with_tool_result(
                 system_prompt         = SYSTEM,
-                conversation          = conversation,
+                conversation          = conversation[-6:],
                 function_declarations = [TAVILY_FN],
                 max_tokens            = 16000,
                 temperature           = 0.3,
@@ -574,24 +607,44 @@ class DeepResearchAgent(BaseAgent):
                 try:
                     raw      = tavily.search(
                         query        = query,
-                        search_depth = "basic",
+                        search_depth = "advanced",
                         max_results  = 5,
                     )
                     results  = raw.get("results", [])
                     snippets = [
-                        f"[{r.get('title','')}] {r.get('content','')[:600]}"
+                        f"[{r.get('title','')}] {r.get('content','')[:500]}"
                         for r in results if r.get("content")
                     ]
+                    ############################
                     answer       = raw.get("answer", "")
-                    tool_response = (
-                        (f"Answer: {answer}\n\n" if answer else "")
-                        + "\n\n".join(snippets[:5])
+                    raw_results = (
+                            (f"Answer: {answer}\n\n" if answer else "")
+                            + "\n\n".join(snippets[:5])
                     )
-                    search_count += 1
-                    research_log.append(f"Q: {query}\nA: {tool_response[:400]}")
+                    try:
+                        tool_response=self.llm.complete(
+                            system_prompt=(
+                                "You are a research summariser. Given web search "
+                                "results, extract only the key facts relevant to "
+                                "the search query. Be concise — 200-300 Words max. "
+                                "No preamble, no bullet points."
+                            ),
+                            user_prompt=(
+                                f"Query: {query}\n\nResults:\n{raw_results}"
+                            ),
+                            max_tokens=1024,
+                            temperature=0.1,
+
+                        )
+                    except Exception as _sum_err:
+                        tool_response = raw_results[ :800]
+                    search_count +=1
+                    research_log.append(f"Q: {query}\nA: {tool_response[:800]}")
                     self._log(
                         f"[Gemma]     → {len(snippets)} results"
                     )
+
+                # ################################
                 except Exception as e:
                     tool_response = f"Search failed: {e}"
                     self._log(f"[Gemma]   Tavily error: {e}")
@@ -650,151 +703,50 @@ class DeepResearchAgent(BaseAgent):
         pdf_path:   str,
     ) -> None:
         """
-        Assemble a Gemma script string into a properly formatted A4 PDF.
-
-        Strips markdown artifacts (**, *, #, [SECTION] headers) and renders
-        clean prose with the same academic style as the standard DeepResearch
-        PDF — title, abstract-style intro, section headings, body text.
+        Assemble a Gemma script string into a clean A4 PDF via ReportLab.
+        Format is deliberately simple — the ProcEx pipeline reads it as a PDF
+        the same way it reads any input document.
         """
-        import re as _re
-        from datetime import datetime
         from reportlab.lib.pagesizes import A4
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.styles import getSampleStyleSheet
         from reportlab.lib.units import cm
-        from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
-        from reportlab.lib import colors
         from reportlab.platypus import (
-            SimpleDocTemplate, Paragraph, Spacer, HRFlowable, KeepTogether
+            SimpleDocTemplate, Paragraph, Spacer, HRFlowable
         )
 
-        # ── Custom styles ────────────────────────────────────────────────
-        base   = getSampleStyleSheet()
-        styles = {
-            "title": ParagraphStyle(
-                "GemmaTitle",
-                parent    = base["Title"],
-                fontSize  = 22,
-                leading   = 28,
-                alignment = TA_CENTER,
-                spaceAfter= 6,
-            ),
-            "meta": ParagraphStyle(
-                "GemmaMeta",
-                parent    = base["Normal"],
-                fontSize  = 9,
-                textColor = colors.HexColor("#666666"),
-                alignment = TA_CENTER,
-                spaceAfter= 4,
-            ),
-            "heading": ParagraphStyle(
-                "GemmaHeading",
-                parent      = base["Heading2"],
-                fontSize    = 13,
-                leading     = 18,
-                spaceBefore = 14,
-                spaceAfter  = 4,
-                textColor   = colors.HexColor("#1a1a2e"),
-            ),
-            "body": ParagraphStyle(
-                "GemmaBody",
-                parent    = base["BodyText"],
-                fontSize  = 11,
-                leading   = 17,
-                alignment = TA_JUSTIFY,
-                spaceAfter= 6,
-            ),
-            "source": ParagraphStyle(
-                "GemmaSource",
-                parent    = base["Normal"],
-                fontSize  = 8,
-                textColor = colors.HexColor("#555555"),
-                spaceAfter= 3,
-            ),
-        }
-
-        doc = SimpleDocTemplate(
-            pdf_path,
-            pagesize    = A4,
-            leftMargin  = 2.5*cm, rightMargin = 2.5*cm,
-            topMargin   = 2.5*cm, bottomMargin= 2.5*cm,
+        doc    = SimpleDocTemplate(
+            pdf_path, pagesize=A4,
+            leftMargin=2*cm, rightMargin=2*cm,
+            topMargin=2*cm,  bottomMargin=2*cm,
         )
-        story = []
+        styles = getSampleStyleSheet()
+        story  = []
 
-        # ── Title block ──────────────────────────────────────────────────
-        story.append(Paragraph(topic.title(), styles["title"]))
-        story.append(Paragraph(
-            f"Generated by Gemma 4 31B · {datetime.now().strftime('%B %d, %Y')} · "
-            f"{len(search_log)} web searches",
-            styles["meta"],
-        ))
-        story.append(Spacer(1, 0.3*cm))
-        story.append(HRFlowable(width="100%", thickness=1.5,
-                                color=colors.HexColor("#1a1a2e")))
+        # Title
+        story.append(Paragraph(topic, styles["Title"]))
+        story.append(Spacer(1, 0.4*cm))
+        story.append(HRFlowable(width="100%", thickness=1))
         story.append(Spacer(1, 0.4*cm))
 
-        # ── Strip markdown artifacts from script ─────────────────────────
-        def clean_markdown(text: str) -> str:
-            # Remove bold/italic markers
-            text = _re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
-            text = _re.sub(r"\*([^*]+)\*",       r"\1", text)
-            # Remove inline code
-            text = _re.sub(r"`([^`]+)`", r"\1", text)
-            # Remove markdown headers (##, ###, etc.) — we handle them below
-            text = _re.sub(r"^#{1,4}\s+", "", text, flags=_re.MULTILINE)
-            # Remove leading ** from section labels like **NARRATOR:**
-            text = _re.sub(r"^\*{1,2}([A-Z][^*:]+):\*{0,2}\s*", r"\1: ", text, flags=_re.MULTILINE)
-            # Remove timestamp markers like **(0:00-0:20) [HOOK]**
-            text = _re.sub(r"\*{0,2}\(\d+:\d+-\d+:\d+\)[^*\n]*\*{0,2}", "", text)
-            # Remove [SECTION LABEL] markers standing alone on a line
-            text = _re.sub(r"^\[[A-Z][A-Z ]+\]\s*$", "", text, flags=_re.MULTILINE)
-            # Remove "Visual: ..." stage directions in parentheses/asterisks
-            text = _re.sub(r"\*{0,2}\(Visual:[^)]+\)\*{0,2}", "", text)
-            # Collapse 3+ blank lines to 2
-            text = _re.sub(r"\n{3,}", "\n\n", text)
-            return text.strip()
-
-        script_clean = clean_markdown(script)
-
-        # ── Parse into paragraphs, detect section headings ───────────────
-        # Heuristic: a paragraph is a heading if it is ALL CAPS or ends with ":"
-        # and is under 80 chars and has no full stop.
-        def is_heading(para: str) -> bool:
-            p = para.strip()
-            if len(p) > 100 or "." in p:
-                return False
-            if p.upper() == p and len(p) > 4:
-                return True   # ALL CAPS
-            if p.endswith(":") and len(p.split()) <= 8:
-                return True   # "Section Name:"
-            # [BRACKET LABEL] style
-            if _re.match(r"^\[[A-Z][^\]]+\]$", p):
-                return True
-            return False
-
-        paras = [p.strip() for p in script_clean.split("\n\n") if p.strip()]
-        for para in paras:
-            if is_heading(para):
-                clean_head = _re.sub(r"[\[\]:]", "", para).strip().title()
-                story.append(KeepTogether([
-                    Paragraph(clean_head, styles["heading"]),
-                    HRFlowable(width="100%", thickness=0.5,
-                               color=colors.HexColor("#cccccc")),
-                    Spacer(1, 0.1*cm),
-                ]))
-            else:
-                story.append(Paragraph(para, styles["body"]))
-
-        # ── Research sources ─────────────────────────────────────────────
-        if search_log:
-            story.append(Spacer(1, 0.8*cm))
-            story.append(HRFlowable(width="100%", thickness=1,
-                                    color=colors.HexColor("#cccccc")))
+        # Script body
+        for para in script.split("\n\n"):
+            para = para.strip()
+            if not para:
+                continue
+            story.append(Paragraph(para, styles["BodyText"]))
             story.append(Spacer(1, 0.3*cm))
-            story.append(Paragraph("Research Sources", styles["heading"]))
+
+        # Research source log (compact)
+        if search_log:
+            story.append(Spacer(1, 0.5*cm))
+            story.append(HRFlowable(width="100%", thickness=0.5))
+            story.append(Spacer(1, 0.3*cm))
+            story.append(Paragraph("Research Sources", styles["Heading2"]))
             for i, entry in enumerate(search_log, 1):
-                # Show only the query part (before the newline)
-                query_line = entry.split("\n")[0].replace("Q: ", "").strip()
-                story.append(Paragraph(f"{i}.  {query_line}", styles["source"]))
+                story.append(
+                    Paragraph(f"{i}. {entry[:200]}", styles["Normal"])
+                )
+                story.append(Spacer(1, 0.2*cm))
 
         doc.build(story)
         self._log(f"[Gemma] PDF assembled: {pdf_path}")
@@ -1008,3 +960,4 @@ def _split_paragraphs(prose: str) -> list[str]:
     """Split prose into non-empty paragraphs on blank lines."""
     paras = re.split(r"\n{2,}", prose.strip())
     return [p.replace("\n", " ").strip() for p in paras if p.strip()]
+

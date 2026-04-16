@@ -1207,12 +1207,11 @@ def run_generation_render_pipeline(
                 )
                 try:
                     import dataclasses
-                    updated = director.reroute_scene(
-                        scene, critic_result.reroute_frame, aspect=getattr(
-                            RESOLUTIONS.get(state.resolution,
-                            RESOLUTIONS["1080p"]), "aspect_ratio", "16:9"
-                        )
-                    )
+                    updated = director.reroute_scene(scene, critic_result.reroute_frame, aspect=getattr(
+                                RESOLUTIONS.get(state.resolution,
+                                RESOLUTIONS["1080p"]), "aspect_ratio", "16:9"
+                    ), context=getattr(state, "context", ""))
+
                     # Grab beats BEFORE dataclasses.replace() — it only copies
                     # declared dataclass fields, so _reroute_beats (set via
                     # object.__setattr__) would be silently dropped otherwise.
@@ -1262,10 +1261,7 @@ def run_generation_render_pipeline(
                         RESOLUTIONS.get(state.resolution, RESOLUTIONS["1080p"]),
                         "aspect_ratio", "16:9"
                     )
-                    updated = director.reroute_scene(
-                        scene, critic_result.reroute_frame,
-                        aspect=aspect, force_split=True
-                    )
+                    updated = director.reroute_scene(scene, critic_result.reroute_frame, aspect=aspect, force_split=True, context=getattr(state, "context", ""))
                     reroute_beats = getattr(updated, "_reroute_beats", None)
                     if reroute_beats:
                         log(f"Renderer-{wid}: Scene {scene.id} — forced split: "
@@ -1299,6 +1295,20 @@ def run_generation_render_pipeline(
                     f"Renderer-{wid}: Scene {scene.id} — depth limit reached, "
                     f"converting to ImageGen fallback"
                 )
+
+                # ── Gemma mode: image generation is disabled ──────────────
+                # When cfg.gemma_provider=True, image_gen_enabled=False.
+                # Routing to image_worker would silently fail. Instead accept
+                # the current clip as TEXT_ANIMATION — still a valid scene.
+                if getattr(cfg, "gemma_provider", False):
+                    log(
+                        f"Renderer-{wid}: Scene {scene.id} — Gemma mode, "
+                        f"imagegen disabled → accepting clip as TEXT_ANIMATION"
+                    )
+                    scene.visual_strategy = VisualStrategy.TEXT_ANIMATION
+                    mark_done(scene, clip_path)
+                    continue
+
                 # Cycle-breaker: if visual_strategy is already TEXT_ANIMATION,
                 # IMAGE_GEN already failed previously for this scene. Do NOT
                 # dispatch to image_worker again — that creates an infinite
@@ -1404,18 +1414,9 @@ def run_generation_render_pipeline(
         t.start()
 
     # ── Launch coder workers ──────────────────────────────────────────────
-    # In Gemma mode, serialise to 1 coder thread to prevent all coders from
-    # simultaneously piling into the TPM throttler. Each ManimCoder call
-    # already waits for the window to clear — multiple threads just multiply
-    # the wait contention without gaining any throughput.
-    # Non-Gemma mode uses cfg.coder_workers (default 4) unchanged.
-    _gemma_mode = getattr(cfg, "gemma_provider", False)
-    n_coders    = 1 if _gemma_mode else max(1, min(len(state.scenes), cfg.coder_workers))
+    n_coders    = max(1, min(len(state.scenes), cfg.coder_workers))
     n_renderers = max(1, min(total_scenes[0], cfg.render_workers))
     threads     = []
-
-    if _gemma_mode:
-        print(f"[Parallel] Gemma mode: serialised to 1 coder thread (TPM throttle)")
 
     for i in range(n_coders):
         t = threading.Thread(target=coder_worker, args=(i+1,), name=f"Coder-{i+1}")

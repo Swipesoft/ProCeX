@@ -19,7 +19,11 @@ import time
 from state import ProcExState, InputType, VisualStrategy
 from config import ProcExConfig
 from utils.llm_client import LLMClient
-from utils.gemma_client import GemmaClient
+# -------------------------------------------------------
+# Switch from TogetherAI inference to Modal cloud self-hosted
+# from utils.gemma_client import GemmaClient
+from utils.modal_gemma_client import GemmaClient
+# -------------------------------------------------------
 from utils.slug import slugify
 from utils.pdf_parser import extract_pdf_text
 
@@ -258,10 +262,12 @@ class ProcExOrchestrator:
         target_minutes: float = 5.0,
         resume_checkpoint: str | None = None,
         presentation_style: str = "auto",
+        context: str = "",
     ) -> str:
         start_time = time.time()
 
         # ── Gemma provider overrides ──────────────────────────────────────────
+        """
         if getattr(self.cfg, "gemma_provider", False):
             # Force landscape 1080p — avoids portrait layout constraints
             # that cause over-rejection in VLMCritic when image_gen is off
@@ -270,7 +276,9 @@ class ProcExOrchestrator:
                 resolution = "1080p"
             # Image generation requires Gemini imagen — disabled for Gemma run
             self.cfg.enable_critic_loop = True   # critic still runs (Gemma vision)
-
+        """
+        if getattr(self.cfg, "gemma_provider", False):
+            self.cfg.enable_critic_loop = True
         # ── Load or create state ──────────────────────────────────────────
         if resume_checkpoint and os.path.exists(resume_checkpoint):
             print(f"[ProcEx] Resuming from checkpoint: {resume_checkpoint}")
@@ -280,6 +288,15 @@ class ProcExOrchestrator:
             # Fresh run — purge any stale checkpoint for this topic so no
             # agent is ever silently skipped with outdated decisions.
             self._clear_checkpoint(state)
+
+        # Store context on state — survives checkpointing, reaches all agents.
+        # On resume: CLI --context overrides any saved context; if no CLI context
+        # is given, the checkpoint's saved context is preserved automatically.
+        if context:
+            state.context = context
+            print(f"[ProcEx] ℹ Context set ({len(context)} chars) — all agents guided by it")
+        elif state.context:
+            print(f"[ProcEx] ℹ Context restored from checkpoint ({len(state.context)} chars)")
 
         for issue in self.cfg.validate():
             print(f"[ProcEx] ⚠ {issue}")
@@ -367,8 +384,6 @@ class ProcExOrchestrator:
         # to an animated video (I2V) or at minimum a cinematic image with
         # ken-burns. This gives every video a live-motion opening frame that
         # captures viewers before they scroll away.
-        # Skipped when image_gen is disabled (Gemma mode / ML domain) because
-        # the hook requires Gemini image generation which is unavailable.
         # ════════════════════════════════════════════════════════════════
         _image_gen_allowed = (
             not getattr(self.cfg, "gemma_provider", False)

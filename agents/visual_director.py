@@ -388,10 +388,11 @@ class VisualDirector(BaseAgent):
         results = []
         for attempt in range(self.cfg.max_llm_retries):
             try:
+                from utils.context_injection import wrap_with_context as _ctx_wrap
                 raw = self.llm.complete_json(
                     DIRECTOR_SYSTEM,
-                    _build_director_prompt(state),
-                    max_tokens=32768,  # raised — large scene counts need room
+                    _ctx_wrap(_build_director_prompt(state), getattr(state, "context", "")),
+                    max_tokens=10000,  # raised — large scene counts need room
                     temperature=0.4,
                     primary_provider="gemini",
                 )
@@ -528,6 +529,7 @@ class VisualDirector(BaseAgent):
             frame_bytes: bytes,
             aspect: str = "16:9",
             force_split: bool = False,
+            context: str = "",
     ):
         """
         Called by parallel_runner when VLMCritic returns status="reroute"
@@ -633,9 +635,11 @@ For PATH B:
 }}"""
 
         try:
+            from utils.context_injection import wrap_with_context as _ctx_wrap
+            _ctx = context # Bug Fix Log: [state not in signature] #getattr(state, "context", "") if state else ""
             raw = self.llm.complete_vision(
                 system_prompt=system_prompt,
-                user_prompt=user_prompt,
+                user_prompt=_ctx_wrap(user_prompt, _ctx),
                 image_bytes=frame_bytes,
                 image_mime="image/jpeg",
                 max_tokens=16384,

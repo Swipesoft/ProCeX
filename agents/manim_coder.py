@@ -112,6 +112,9 @@ OUTPUT: Return ONLY the class definition. No fences, no explanation.
 LAYOUT_RULES_LANDSCAPE = """LAYOUT RULES (LANDSCAPE 16:9)
 ============
 L1. Frame: 14 wide x 8 tall. Safe zone: x in [-5.5, 5.5], y in [-3.3, 3.3].
+    FORBIDDEN LEFT EDGE (x < -5.5): physical screen edge — content clips off screen.
+    FORBIDDEN RIGHT EDGE (x > 5.5): physical screen edge — content clips off screen.
+    ALWAYS use .to_edge(LEFT, buff=0.5) or .to_edge(RIGHT, buff=0.5) — never buff=0.
 L2. Clear screen between major sections:
       self.play(FadeOut(Group(*self.mobjects)), run_time=0.5)
 L3. Text sizes: titles max 44, body=32, captions=24, never above 52.
@@ -124,7 +127,16 @@ L7. interpolate_color(BG, CYAN, 0.5) <- CORRECT (both are ManimColor objects)
 L8. ZONE NAMES (TITLE, MAIN, SIDEBAR, FOOTER, CENTER, etc.) are COORDINATE
     REFERENCES ONLY — they are NEVER Text() objects or labels in the scene.
     NEVER write: Text("TITLE", ...) or Text("MAIN", ...) or Text("SIDEBAR", ...)
-    Zone names exist only as .move_to() coordinates in your Python code."""
+    Zone names exist only as .move_to() coordinates in your Python code.
+    
+L9. CODE BLOCKS: when displaying code with the Code() object or code-styled Text:
+      - Max width: 12 units (leaves 1 unit margin each side within safe zone).
+      - Always centre or anchor with buff: code_block.move_to(ORIGIN) or
+        code_block.to_edge(LEFT, buff=0.7)
+      - Scale down if needed: if code_block.width > 12: code_block.scale(12 / code_block.width)
+      - NEVER let a Code object touch x < -5.0 — long lines will clip.
+      - If the code has lines > 40 chars, use font_size <= 20 and tab_width=2.
+"""
 
 LAYOUT_RULES_PORTRAIT = """LAYOUT RULES (PORTRAIT 9:16 — TIKTOK/REELS/SHORTS)
 ============
@@ -173,7 +185,18 @@ L10. interpolate_color(BG, CYAN, 0.5) <- CORRECT (both are ManimColor objects)
 L11. ZONE NAMES (TITLE, MAIN, UPPER_MAIN, etc.) are COORDINATE REFERENCES ONLY.
      NEVER write: Text("TITLE") or Text("MAIN") as visible Manim objects.
      TIKTOK_SEARCH, TIKTOK_BUTTONS and TIKTOK_TITLE zones mark forbidden regions --
-     never place any content in them. TIKTOK_SEARCH is the top row (y > +5.33)."""
+     never place any content in them. TIKTOK_SEARCH is the top row (y > +5.33).
+
+L12. CODE BLOCKS: when displaying code with the Code() object or code-styled Text:
+      - Max width: 4.0 units (matches the safe horizontal span).
+      - Always centre horizontally: code_block.move_to(ORIGIN) or
+        code_block.to_edge(LEFT, buff=0.5)
+      - Scale down if needed: if code_block.width > 4.0: code_block.scale(4.0 / code_block.width)
+      - NEVER let a Code object touch x < -3.5 or x > 1.0 — lines will clip.
+      - If the code has lines > 20 chars, use font_size <= 16 and tab_width=2.
+      - Prefer short focused snippets (3-5 lines max) — portrait canvas is too
+        narrow for full function bodies. Split across multiple scenes if needed.
+     """
 
 # ── Fallback: guaranteed-runnable cinematic title card ────────────────────────
 def _fallback_scene(class_name: str, scene: Scene) -> str:
@@ -381,8 +404,10 @@ class ManimCoder(BaseAgent):
             scene_file             = os.path.join(manim_dir, f"scene_{scene.id:02d}.py")
             scene.manim_file_path  = scene_file
 
-            # Attach style_pack to scene so _generate_scene_code can pass it to the prompt
+            # Attach style_pack and context to scene so _generate_scene_code
+            # can access them without signature changes
             scene._style_pack = getattr(state, "style_pack", {})
+            scene._context     = getattr(state, "context", "")
             code = self._generate_scene_code(scene, state.skill_pack, res=res, aspect=aspect)
             self._write_scene_file(scene_file, code, res=res)
             self._log(f"Scene {scene.id} -> {scene_file}")
@@ -429,15 +454,20 @@ class ManimCoder(BaseAgent):
 
         for attempt in range(self.cfg.max_llm_retries):
             try:
+                from utils.context_injection import wrap_with_context as _ctx_wrap
+                _scene_ctx = getattr(scene, "_context", "")[:200] # use only 200 tokens to avoid manim coder ctx overbloat
                 raw  = self.llm.complete(
                     CODER_SYSTEM,
-                    _build_coder_prompt(scene, skill,
-                                        error_context=last_error,
-                                        aspect=aspect,
-                                        style_pack=getattr(scene, "_style_pack", None),
-),
+                    _ctx_wrap(
+                        _build_coder_prompt(scene, skill,
+                                            error_context=last_error,
+                                            aspect=aspect,
+                                            style_pack=getattr(scene, "_style_pack", None),
+                        ),
+                        _scene_ctx,
+                    ),
                     json_mode=False,
-                    max_tokens=16384,
+                    max_tokens=12000,
                     temperature=0.3,
                     primary_provider="claude",
                 )

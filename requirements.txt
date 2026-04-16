@@ -39,6 +39,7 @@ manim
 tavily-python>=0.3.0
 pydub>=0.25.1
 soundfile>=0.12.1
+together
 # ── Optional but recommended ──────────────────────────────────────────────────
 # For async TTS in batch:
 # aiohttp>=3.9.0

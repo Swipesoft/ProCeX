@@ -142,6 +142,9 @@ class ProcExState:
     skill_pack:  dict   = field(default_factory=dict)
     style_pack:  dict   = field(default_factory=dict)   # presentation style skill (tiktok-scifi etc.)
     presentation_style: str = "auto"                    # resolved style id
+    context:            str = ""   # optional perspective/audience/scope string
+                                   # injected into every agent prompt to constrain
+                                   # what the video focuses on and for whom
 
     # ── Script ─────────────────────────────────
     scenes:           list  = field(default_factory=list)   # list[Scene]

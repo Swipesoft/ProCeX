@@ -131,6 +131,10 @@ Examine the annotated frame carefully.
    - Are positioned outside their natural reading area
    - Are so densely packed that text is unreadable
    - Float over titles or footers unintentionally
+   - Touch or exceed the screen margin (x < -5.0 or x > 5.0 in landscape,
+     x < -3.5 or x > 1.0 in portrait) — flag as critical even if not overlapping
+   - Are Code blocks or multi-line text whose lines extend beyond the visible
+     frame edge (characters clipped at left or right boundary)
 
 2. Decide: can this be fixed by repositioning elements within the frame?
    If yes → list corrections.
@@ -142,7 +146,8 @@ Score the layout using this EXACT 5-point rubric — do not deviate:
   4 = Minor crowding. Slight overlap between non-critical elements, still legible.
   3 = Moderate overlap. Labels touch content, some text degraded but readable.
   2 = Major collision. Text blocks fully occluding each other, content lost.
-  1 = Catastrophic. Elements off-screen, invisible, or completely illegible.
+  1 = Catastrophic. Elements off-screen, invisible, completely illegible,
+      or code/text lines clipped at the screen edge.
 
 Respond ONLY with this JSON schema:
 {{

@@ -215,10 +215,10 @@ class ProcExConfig:
     max_llm_retries:     int   = 3
 
     # ── Parallel worker counts ─────────────────────────────────────────
-    tts_workers:         int   = 4   # parallel TTS API calls per scene
-    coder_workers:       int   = 4   # parallel ManimCoder LLM calls
-    image_workers:       int   = 3   # parallel ImageGen API calls
-    render_workers:      int   = 2   # parallel Manim subprocesses
+    tts_workers:         int   = 8   # parallel TTS API calls per scene
+    coder_workers:       int   = 16   # parallel ManimCoder LLM calls
+    image_workers:       int   = 6   # parallel ImageGen API calls
+    render_workers:      int   = 6   # parallel Manim subprocesses
     # render_workers: keep ≤ cpu_count//2 — Manim is CPU-intensive at 4K
     manim_timeout_secs:  int   = 420       # 7 min per scene — generous for complex 4K renders
     enable_critic_loop:  bool  = False

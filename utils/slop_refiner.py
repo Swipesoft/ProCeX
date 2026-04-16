@@ -111,7 +111,10 @@ def refine_scenes(
 
         # Pass 2: LLM correction
         try:
-            corrected_text = _correct_scene(text, triggered, llm)
+            corrected_text = _correct_scene(
+                text, triggered, llm,
+                context=getattr(state, "context", ""),
+            )
             if corrected_text and corrected_text.strip() != text:
                 scene.narration_text   = corrected_text.strip()
                 scene.duration_seconds = _recalc_duration(corrected_text)
@@ -171,9 +174,11 @@ def _correct_scene(
     text:     str,
     patterns: list[dict],
     llm:      "LLMClient",
+    context:  str = "",
 ) -> str:
     """Call LLM with compact remedy list. Returns corrected text."""
-    # Build compact remedy block — just name + remedy, no examples
+    from utils.context_injection import wrap_with_context
+
     remedy_lines = "\n".join(
         f"• [{p['name']}] {p['remedy']}"
         for p in patterns
@@ -184,13 +189,17 @@ def _correct_scene(
         remedies  = remedy_lines,
     )
 
+    # Wrap with teaching context so rewriting stays aligned with the
+    # intended scope (e.g. don't make code narration sound abstract)
+    user_prompt = wrap_with_context(user_prompt, context)
+
     result = llm.complete(
         system_prompt    = _CORRECTION_SYSTEM,
         user_prompt      = user_prompt,
         json_mode        = False,
         max_tokens       = max(2048, int(len(text.split()) * 2.5)),
         temperature      = 0.3,
-        primary_provider = "gemma",   # Claude is strongest at precise prose editing
+        primary_provider = "claude",   # Claude is strongest at precise prose editing
     )
     return result.strip()
 

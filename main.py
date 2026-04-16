@@ -95,6 +95,17 @@ Examples:
         )
     )
     parser.add_argument(
+        "--context", "-c",
+        type=str,
+        default="",
+        help=(
+            "Optional perspective/audience/scope string injected into every agent "
+            "prompt to constrain what the video focuses on. Example: "
+            "'You are a professor teaching PyTorch attention to a student who already "
+            "knows RNN theory. Focus on code implementation, exclude multi-head attention.'"
+        )
+    )
+    parser.add_argument(
         "--provider",
         type=str,
         choices=["gemma"],
@@ -136,9 +147,9 @@ Examples:
         cfg.gemma_provider = True
         # Force landscape 1080p — portrait has too many layout constraints
         # that can cause over-rejection in VLMCritic when image_gen is off.
-        if args.resolution.endswith("_v"):
-            print("[ProcEx] ℹ Gemma mode: portrait resolution overridden → 1080p")
-            args.resolution = "1080p"
+        # if args.resolution.endswith("_v"):
+            # print("[ProcEx] ℹ Gemma mode: portrait resolution overridden → 1080p")
+            # args.resolution = "1080p"
         print("[ProcEx] 🟣 Gemma 4 31B mode active")
         print("[ProcEx]   • All text/vision/code agents → gemma-4-31b-it")
         print("[ProcEx]   • Image generation → disabled")
@@ -190,6 +201,7 @@ Examples:
             input_path = research.research(
                 topic          = args.topic,
                 target_minutes = args.minutes,
+                context        = getattr(args, "context", ""),
             )
             print(f"[ProcEx] ✓ Research report generated: {input_path}")
             print(f"[ProcEx] ▶ Handing off to video pipeline...")
@@ -202,6 +214,7 @@ Examples:
             target_minutes      = args.minutes,
             resume_checkpoint   = args.resume,
             presentation_style  = args.style,
+            context             = getattr(args, "context", ""),
         )
     except KeyboardInterrupt:
         print("\n\n[ProcEx] ⚠ Interrupted by user — saving checkpoint...")

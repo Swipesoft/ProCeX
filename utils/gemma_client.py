@@ -1,127 +1,65 @@
 """
 utils/gemma_client.py
-GemmaClient — unified interface for Gemma 4 31B via the Google GenAI SDK.
+GemmaClient — Gemma 4 31B via TogetherAI serverless endpoint.
 
-Mirrors LLMClient's public interface so agents can swap it in transparently:
-  .complete(system, user, ...)          → str
-  .complete_json(system, user, ...)     → dict | list
-  .complete_vision(system, user, ...)   → str   (single-frame VLMCritic)
-  .complete_vision_multi(...)           → str   (multi-frame VLMCritic)
-  .complete_with_tools(...)             → dict  (agentic function-calling)
+Replaces the previous google.genai implementation which hit Google AI Studio's
+16K TPM limit (causing 60s throttle stalls). TogetherAI Tier 3 allows 3K RPM
+with no TPM cap, eliminating all throttling needs.
 
-Key differences from LLMClient:
-  - No provider chain / fallbacks — Gemma is the sole model
-  - JSON mode enforced via response_mime_type="application/json"
-    + schema string in system prompt → strict, no json-repair soft parsing
-  - thinking_level="HIGH" on every call for quality output
-  - Vision via Part.from_bytes (native multimodal, no base64 string injection)
-  - Function calling via types.Tool(function_declarations=[...])
+Public interface mirrors LLMClient exactly so agents swap it in transparently:
+  .complete(system, user, ...)              → str
+  .complete_json(system, user, ...)         → dict | list
+  .complete_vision(system, user, ...)       → str   (VLMCritic image frames)
+  .complete_vision_json(...)                → dict  (VLMCritic structured)
+  .complete_with_tools(...)                 → dict  (research agentic loop)
+  .complete_with_tool_result(...)           → dict  (research multi-turn)
+
+Model on TogetherAI: google/gemma-4-31B-it
+
+Important — function calling:
+  google/gemma-4-31B-it is NOT in TogetherAI's native function-calling
+  supported models list. The agentic research loop therefore uses a
+  prompt-driven JSON approach: Gemma returns structured JSON deciding
+  whether to search or stop, instead of native tool_calls.
+  complete_with_tools() and complete_with_tool_result() implement this
+  transparently — callers (deep_research.py) are unchanged.
+
+Vision:
+  TogetherAI accepts base64 images as data URIs in image_url content blocks.
+  VLMCritic sends JPEG frames; we encode them inline.
+
+JSON mode:
+  TogetherAI supports response_format={"type": "json_object"} for Gemma.
+  We combine this with a schema description in the system prompt for
+  strict structure enforcement.
 """
 from __future__ import annotations
 
+import base64
 import json
 import time
 from typing import Any, Optional
-
+import threading as _threading  #
 from config import ProcExConfig
 
 
-# ── Model constant ─────────────────────────────────────────────────────────────
-GEMMA_MODEL = "gemma-4-31b-it"
+# ── Constants ─────────────────────────────────────────────────────────────────
+TOGETHER_MODEL  = "google/gemma-4-31B-it" # "moonshotai/Kimi-K2.5" # "google/gemma-4-31B-it"
+TOGETHER_API_KEY_ENV = "TOGETHER_API_KEY"
 
-# ── Thinking config (applied to every call for quality) ───────────────────────
-_THINKING_LEVEL = "HIGH"
-
-# ── Retry settings ────────────────────────────────────────────────────────────
-_MAX_RETRIES   = 3
-_RETRY_SLEEP   = 2.0
-
-# ── TPM throttler ─────────────────────────────────────────────────────────────
-# Gemma 4 31B via Google AI API is capped at 16K tokens/minute (input TPM).
-# thinking_level=HIGH consumes ~6-8K thinking tokens per call on top of input.
-# We track a rolling 60s window of estimated input tokens and pause before
-# any call that would push the running total above TPM_LIMIT_SAFE.
-#
-# Token estimation: 1 token ≈ 4 chars (conservative for English prose).
-# We only count input tokens (system + user prompt) since output/thinking
-# tokens are not part of the input TPM quota.
-
-import collections as _collections
-import threading  as _threading
-
-_TPM_LIMIT_SAFE  = 12_000   # pause threshold — 75% of 16K, leaves headroom
-_TPM_WINDOW_SECS = 60       # rolling window width
-_tpm_lock        = _threading.Lock()
-_tpm_log: "collections.deque[tuple[float, int]]" = _collections.deque()  # (timestamp, tokens)
-
-
-def _estimate_tokens(text: str) -> int:
-    """Rough token estimate: 1 token ≈ 4 characters."""
-    return max(1, len(text) // 4)
-
-
-def _tpm_acquire(estimated_tokens: int) -> None:
-    """
-    Block until adding estimated_tokens to the rolling window would not
-    exceed _TPM_LIMIT_SAFE. Then register the tokens.
-
-    Called once per generate_content invocation with the combined
-    system + user prompt length.
-
-    Bug guard 1 — empty deque after expiry:
-      After evicting old entries the deque can be empty, making
-      _tpm_log[0] raise IndexError. If the window is empty we always
-      proceed — an empty window means 0 tokens used.
-
-    Bug guard 2 — single call larger than the safe limit:
-      If estimated_tokens > _TPM_LIMIT_SAFE the condition
-      `used + estimated_tokens <= _TPM_LIMIT_SAFE` can NEVER be true,
-      causing an infinite loop. We cap the registered amount at
-      _TPM_LIMIT_SAFE so large prompts don't deadlock the pipeline.
-    """
-    # Cap so a single oversized prompt never causes an infinite wait
-    charge = min(estimated_tokens, _TPM_LIMIT_SAFE)
-
-    while True:
-        with _tpm_lock:
-            now = time.time()
-            # Expire entries older than the rolling window
-            while _tpm_log and _tpm_log[0][0] < now - _TPM_WINDOW_SECS:
-                _tpm_log.popleft()
-            used = sum(t for _, t in _tpm_log)
-
-            # ── Bug guard 1: empty deque → window is clear, always proceed ──
-            if not _tpm_log:
-                _tpm_log.append((now, charge))
-                return
-
-            if used + charge <= _TPM_LIMIT_SAFE:
-                _tpm_log.append((now, charge))
-                return   # safe to proceed
-
-            # Window is full — calculate sleep until oldest entry expires
-            # _tpm_log[0] is safe here because we checked not-empty above
-            oldest_ts  = _tpm_log[0][0]
-            sleep_secs = max(1.0, (_TPM_WINDOW_SECS - (now - oldest_ts)) + 1.0)
-            used_snap  = used   # capture before releasing lock
-
-        # Release lock before sleeping
-        print(
-            f"[GemmaThrottle] TPM window at {used_snap:,}/{_TPM_LIMIT_SAFE:,} tokens — "
-            f"waiting {sleep_secs:.1f}s"
-        )
-        time.sleep(sleep_secs)
+_MAX_RETRIES = 3
+_RETRY_SLEEP = 1.0
+_TOGETHER_SEM = _threading.Semaphore(1)
 
 
 class GemmaClient:
     """
-    Thin wrapper around google.genai for Gemma 4 31B.
+    Thin wrapper around TogetherAI's chat completions API for Gemma 4 31B.
 
     Constructed once by the orchestrator when --provider gemma is set,
     then passed to every agent in place of LLMClient.
 
-    The .cfg attribute is kept so agents that read cfg.gemini_api_key etc.
-    still work without modification.
+    .cfg is kept so agents that read cfg.gemini_api_key etc. still work.
     """
 
     def __init__(self, cfg: ProcExConfig):
@@ -130,19 +68,85 @@ class GemmaClient:
         self._init_client()
 
     def _init_client(self):
-        if not self.cfg.gemini_api_key:
+        import os
+        api_key = os.environ.get(TOGETHER_API_KEY_ENV, "")
+        if not api_key:
             raise RuntimeError(
-                "GEMINI_API_KEY is required for GemmaClient. "
-                "Gemma 4 31B is accessed via the Gemini API endpoint."
+                f"{TOGETHER_API_KEY_ENV} not set. "
+                "Add it to your .env file to use the TogetherAI Gemma endpoint."
             )
         try:
-            from google import genai
-            self._client = genai.Client(api_key=self.cfg.gemini_api_key)
-            print(f"[GemmaClient] Initialised — model={GEMMA_MODEL}")
+            from together import Together
+            self._client = Together(api_key=api_key)
+            print(f"[GemmaClient] Initialised — model={TOGETHER_MODEL} via TogetherAI")
         except ImportError:
             raise RuntimeError(
-                "google-genai SDK not installed. Run: pip install google-genai"
+                "together SDK not installed. Run: pip install together"
             )
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _call(
+        self,
+        messages:        list[dict],
+        max_tokens:      int   = 16000,
+        temperature:     float = 0.7,
+        json_mode:       bool  = False,
+        schema:          Optional[dict] = None,
+
+    ) -> str:
+        """
+        Single Together chat completion call with retry logic.
+        Returns the assistant message content string.
+        """
+        kwargs: dict[str, Any] = dict(
+            model       = TOGETHER_MODEL,
+            messages    = messages,
+            max_tokens  = max_tokens,
+            temperature = temperature,
+            timeout=300,
+        )
+        if json_mode:
+            if schema:
+                # Structured outputs with explicit schema
+                kwargs["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "structured_output",
+                        "schema": schema,
+                    },
+                }
+            else:
+                # Basic JSON object mode
+                kwargs["response_format"] = {"type": "json_object"}
+
+        last_err = None
+        for attempt in range(1, _MAX_RETRIES + 1):
+            try:
+                with _TOGETHER_SEM:
+                    response = self._client.chat.completions.create(**kwargs)
+                # response = self._client.chat.completions.create(**kwargs)
+
+                return response.choices[0].message.content or ""
+            except Exception as e:
+                last_err = e
+                print(f"[GemmaClient] attempt {attempt}/{_MAX_RETRIES} failed: {e}")
+                if attempt < _MAX_RETRIES:
+                    time.sleep(_RETRY_SLEEP * attempt)
+
+        raise RuntimeError(f"[GemmaClient] All retries failed. Last: {last_err}")
+
+    def _build_messages(self, system: str, user: str) -> list[dict]:
+        """Standard system+user message pair."""
+        return [
+            {"role": "system",  "content": system},
+            {"role": "user",    "content": user},
+        ]
+
+    def _image_to_data_uri(self, image_bytes: bytes, mime: str) -> str:
+        """Encode raw image bytes as a base64 data URI for TogetherAI vision."""
+        b64 = base64.b64encode(image_bytes).decode()
+        return f"data:{mime};base64,{b64}"
 
     # ── Primary text interface ─────────────────────────────────────────────────
 
@@ -151,68 +155,38 @@ class GemmaClient:
         system_prompt: str,
         user_prompt:   str,
         *,
-        json_mode:        bool          = False,
-        max_tokens:       int           = 16000,
-        temperature:      float         = 0.7,
-        schema:           Optional[dict] = None,   # JSON schema dict; only used when json_mode=True
-        model_override:   Optional[str]  = None,   # ignored — Gemma only
-        primary_provider: Optional[str]  = None,   # ignored — Gemma only
+        json_mode:        bool            = False,
+        max_tokens:       int             = 16000,
+        temperature:      float           = 0.7,
+        schema:           Optional[dict]  = None,
+        model_override:   Optional[str]   = None,   # ignored — Gemma only
+        primary_provider: Optional[str]   = None,   # ignored — Gemma only
     ) -> str:
-        """
-        Text completion via Gemma 4 31B.
-
-        json_mode=True  → enforces application/json response_mime_type.
-                          If schema is provided it is embedded in the system
-                          prompt so Gemma knows the exact shape expected.
-        Returns raw string (JSON string when json_mode=True).
-        """
-        from google.genai import types
-
-        # When JSON is required, append schema to system prompt
+        """Text completion via Gemma 4 31B on TogetherAI."""
         sys_text = system_prompt
         if json_mode and schema:
             sys_text = (
                 system_prompt.rstrip()
-                + "\n\nYou MUST respond with valid JSON that matches this schema exactly:\n"
+                + "\n\nYou MUST respond with valid JSON matching this schema:\n"
                 + json.dumps(schema, indent=2)
-                + "\nNo preamble. No markdown. No explanation. Only valid JSON."
+                + "\nNo preamble. No markdown. Only valid JSON."
             )
         elif json_mode:
             sys_text = (
                 system_prompt.rstrip()
-                + "\n\nRespond ONLY with valid JSON. No preamble, no markdown fences, "
-                  "no explanation. The first character of your response must be { or [."
+                + "\n\nRespond ONLY with valid JSON. "
+                  "No preamble, no markdown fences, no explanation. "
+                  "First character must be { or [."
             )
 
-        config_kwargs = dict(
-            system_instruction = sys_text,
-            max_output_tokens  = max_tokens,
-            temperature        = temperature,
-            thinking_config    = types.ThinkingConfig(thinking_level=_THINKING_LEVEL),
+        messages = self._build_messages(sys_text, user_prompt)
+        return self._call(
+            messages,
+            max_tokens  = max_tokens,
+            temperature = temperature,
+            json_mode   = json_mode,
+            schema      = schema,
         )
-        if json_mode:
-            config_kwargs["response_mime_type"] = "application/json"
-
-        # Throttle: estimate input tokens and wait if TPM window is full
-        input_tokens = _estimate_tokens(sys_text + (user_prompt if isinstance(user_prompt, str) else ""))
-        _tpm_acquire(input_tokens)
-
-        last_err = None
-        for attempt in range(1, _MAX_RETRIES + 1):
-            try:
-                response = self._client.models.generate_content(
-                    model    = GEMMA_MODEL,
-                    contents = user_prompt,
-                    config   = types.GenerateContentConfig(**config_kwargs),
-                )
-                return response.text or ""
-            except Exception as e:
-                last_err = e
-                print(f"[GemmaClient] attempt {attempt}/{_MAX_RETRIES} failed: {e}")
-                if attempt < _MAX_RETRIES:
-                    time.sleep(_RETRY_SLEEP * attempt)
-
-        raise RuntimeError(f"[GemmaClient] All retries failed. Last error: {last_err}")
 
     def complete_json(
         self,
@@ -222,12 +196,11 @@ class GemmaClient:
         max_tokens:       int            = 16000,
         temperature:      float          = 0.3,
         schema:           Optional[dict] = None,
-        primary_provider: Optional[str]  = None,   # ignored
+        primary_provider: Optional[str]  = None,    # ignored
     ) -> dict | list:
         """
-        Strict JSON completion — validates the response before returning.
-        Retries up to _MAX_RETRIES times if JSON is invalid.
-        Raises RuntimeError if all retries return invalid JSON.
+        Strict JSON completion — retries until valid JSON is parsed.
+        Uses TogetherAI json_object mode + schema-in-prompt for enforcement.
         """
         last_err = None
         for attempt in range(1, _MAX_RETRIES + 1):
@@ -239,6 +212,10 @@ class GemmaClient:
                 temperature = temperature,
                 schema      = schema,
             )
+            # Strip markdown fences just in case
+            raw = raw.strip()
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
             try:
                 return json.loads(raw)
             except json.JSONDecodeError as e:
@@ -252,7 +229,7 @@ class GemmaClient:
 
         raise RuntimeError(
             f"[GemmaClient] Could not parse valid JSON after {_MAX_RETRIES} attempts. "
-            f"Last error: {last_err}"
+            f"Last: {last_err}"
         )
 
     # ── Vision interface ───────────────────────────────────────────────────────
@@ -266,20 +243,24 @@ class GemmaClient:
         image_mime:       str           = "image/png",
         max_tokens:       int           = 16384,
         temperature:      float         = 0.1,
-        primary_provider: Optional[str] = None,   # ignored
+        primary_provider: Optional[str] = None,    # ignored
     ) -> str:
         """
         Single-image vision completion — used by VLMCritic stage 1.
-        Sends image via Part.from_bytes (native multimodal, no base64 string).
+        TogetherAI accepts base64 data URIs in the image_url content block.
         """
-        return self._call_gemma_vision(
-            system_prompt = system_prompt,
-            user_prompt   = user_prompt,
-            image_parts   = [(image_bytes, image_mime)],
-            max_tokens    = max_tokens,
-            temperature   = temperature,
-            json_mode     = False,
-        )
+        data_uri = self._image_to_data_uri(image_bytes, image_mime)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text",      "text": user_prompt},
+                    {"type": "image_url", "image_url": {"url": data_uri}},
+                ],
+            },
+        ]
+        return self._call(messages, max_tokens=max_tokens, temperature=temperature)
 
     def complete_vision_json(
         self,
@@ -293,8 +274,7 @@ class GemmaClient:
         schema:        Optional[dict] = None,
     ) -> dict | list:
         """
-        Vision + strict JSON output — used by VLMCritic to get structured
-        collision report from Gemma's visual inspection.
+        Vision + strict JSON — used by VLMCritic to get structured collision report.
         """
         sys_text = system_prompt
         if schema:
@@ -305,18 +285,33 @@ class GemmaClient:
                 + "\nNo preamble. No markdown. Only valid JSON."
             )
 
+        data_uri = self._image_to_data_uri(image_bytes, image_mime)
+        messages = [
+            {"role": "system", "content": sys_text},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text",      "text": user_prompt},
+                    {"type": "image_url", "image_url": {"url": data_uri}},
+                ],
+            },
+        ]
+
         last_err = None
         for attempt in range(1, _MAX_RETRIES + 1):
-            raw = self._call_gemma_vision(
-                system_prompt = sys_text,
-                user_prompt   = user_prompt,
-                image_parts   = [(image_bytes, image_mime)],
-                max_tokens    = max_tokens,
-                temperature   = temperature,
-                json_mode     = True,
+            raw = self._call(
+                messages,
+                max_tokens  = max_tokens,
+                temperature = temperature,
+                json_mode   = True,
+                schema      = schema,
             )
+            raw = raw.strip()
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
             try:
-                return json.loads(raw)
+                result = json.loads(raw)
+                return result if isinstance(result, (dict, list)) else {}
             except json.JSONDecodeError as e:
                 last_err = e
                 print(
@@ -330,111 +325,88 @@ class GemmaClient:
             f"[GemmaClient] Vision JSON failed after {_MAX_RETRIES} attempts: {last_err}"
         )
 
-    def _call_gemma_vision(
-        self,
-        system_prompt: str,
-        user_prompt:   str,
-        image_parts:   list[tuple[bytes, str]],   # [(bytes, mime_type), ...]
-        max_tokens:    int,
-        temperature:   float,
-        json_mode:     bool = False,
-    ) -> str:
-        """Internal: build multimodal content and call Gemma."""
-        from google.genai import types
+    # ── Native function calling (TogetherAI tool_calls) ──────────────────────
+    #
+    # google/gemma-4-31B-it supports Tool Calling on TogetherAI (confirmed
+    # in the model card Features section). We use the standard Together API
+    # tool_calls format — same as the docs show for other models.
+    #
+    # function_declarations use the same dict schema as google.genai:
+    #   {"name": str, "description": str, "parameters": {...JSON Schema...}}
+    # We wrap each in {"type": "function", "function": {...}} for Together.
 
-        parts = []
-        for img_bytes, mime in image_parts:
-            parts.append(types.Part.from_bytes(data=img_bytes, mime_type=mime))
-        parts.append(types.Part.from_text(text=user_prompt))
+    def _decls_to_together_tools(self, function_declarations: list[dict]) -> list[dict]:
+        """Convert google.genai-style declarations to Together tool format."""
+        tools = []
+        for decl in function_declarations:
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name":        decl.get("name", ""),
+                    "description": decl.get("description", ""),
+                    "parameters":  decl.get("parameters", {}),
+                },
+            })
+        return tools
 
-        config_kwargs = dict(
-            system_instruction = system_prompt,
-            max_output_tokens  = max_tokens,
-            temperature        = temperature,
-            thinking_config    = types.ThinkingConfig(thinking_level=_THINKING_LEVEL),
+    def _parse_tool_calls(self, response) -> dict:
+        """
+        Parse a Together response into the standard tool result dict.
+        Returns:
+          {"type": "function_call", "name": str, "args": dict}
+          {"type": "text",          "text": str}
+        """
+        msg = response.choices[0].message
+        tool_calls = getattr(msg, "tool_calls", None) or []
+        print(
+            f"[GemmaClient] raw message: tool_calls={len(tool_calls)}, content={repr((msg.content or '')[:300])}, role={msg.role}"
         )
-        if json_mode:
-            config_kwargs["response_mime_type"] = "application/json"
+        print(f"[GemmaClient] full message dump: {msg.model_dump()}")
 
-        # Throttle input tokens (image bytes count too — rough: len/4)
-        img_token_est = sum(len(b) // 4 for b, _ in image_parts)
-        _tpm_acquire(_estimate_tokens(system_prompt + user_prompt) + img_token_est)
-
-        last_err = None
-        for attempt in range(1, _MAX_RETRIES + 1):
+        if tool_calls:
+            # Take the first tool call (research loop fires one at a time)
+            tc   = tool_calls[0]
+            name = tc.function.name
             try:
-                response = self._client.models.generate_content(
-                    model    = GEMMA_MODEL,
-                    contents = types.Content(parts=parts, role="user"),
-                    config   = types.GenerateContentConfig(**config_kwargs),
-                )
-                return response.text or ""
-            except Exception as e:
-                last_err = e
-                print(f"[GemmaClient] vision attempt {attempt}/{_MAX_RETRIES} failed: {e}")
-                if attempt < _MAX_RETRIES:
-                    time.sleep(_RETRY_SLEEP * attempt)
+                args = json.loads(tc.function.arguments)
+            except (json.JSONDecodeError, AttributeError):
+                args = {}
+            return {"type": "function_call", "name": name, "args": args}
 
-        raise RuntimeError(f"[GemmaClient] Vision failed: {last_err}")
-
-    # ── Function calling interface ─────────────────────────────────────────────
+        # No tool call — model returned text (research complete)
+        print(
+            f"[GemmaClient] text response, content length: {len(msg.content or '')}, preview: {(msg.content or '')[:200]!r}")
+        return {"type": "text", "text": msg.content or ""}
 
     def complete_with_tools(
         self,
-        system_prompt:        str,
-        user_prompt:          str,
+        system_prompt:         str,
+        user_prompt:           str,
         function_declarations: list[dict],
         *,
         max_tokens:  int   = 16000,
         temperature: float = 0.3,
     ) -> dict:
         """
-        Single-turn function-calling completion.
-        Returns a dict with either:
-          {"type": "function_call", "name": str, "args": dict}
-          {"type": "text", "text": str}
-
-        The caller is responsible for executing the function and continuing
-        the conversation loop.
+        Single-turn native tool-calling completion.
+        Returns {"type": "function_call", "name": str, "args": dict}
+                or {"type": "text", "text": str}.
         """
-        from google.genai import types
-
-        tool = types.Tool(function_declarations=function_declarations)
-
-        config = types.GenerateContentConfig(
-            system_instruction = system_prompt,
-            max_output_tokens  = max_tokens,
-            temperature        = temperature,
-            thinking_config    = types.ThinkingConfig(thinking_level=_THINKING_LEVEL),
-            tools              = [tool],
-        )
-
-        _tpm_acquire(_estimate_tokens(system_prompt + (user_prompt if isinstance(user_prompt, str) else "")))
+        messages = self._build_messages(system_prompt, user_prompt)
+        tools    = self._decls_to_together_tools(function_declarations)
 
         last_err = None
         for attempt in range(1, _MAX_RETRIES + 1):
             try:
-                response = self._client.models.generate_content(
-                    model    = GEMMA_MODEL,
-                    contents = user_prompt,
-                    config   = config,
+                response = self._client.chat.completions.create(
+                    model       = TOGETHER_MODEL,
+                    messages    = messages,
+                    tools       = tools,
+                    max_tokens  = max_tokens,
+                    temperature = temperature,
+                    timeout=300
                 )
-                candidate = response.candidates[0] if response.candidates else None
-                if not candidate:
-                    return {"type": "text", "text": ""}
-
-                for part in (candidate.content.parts or []):
-                    if hasattr(part, "function_call") and part.function_call:
-                        fc = part.function_call
-                        return {
-                            "type": "function_call",
-                            "name": fc.name,
-                            "args": dict(fc.args) if fc.args else {},
-                        }
-
-                # No function call — model returned text (research complete)
-                return {"type": "text", "text": response.text or ""}
-
+                return self._parse_tool_calls(response)
             except Exception as e:
                 last_err = e
                 print(f"[GemmaClient] tool call attempt {attempt}/{_MAX_RETRIES} failed: {e}")
@@ -445,79 +417,69 @@ class GemmaClient:
 
     def complete_with_tool_result(
         self,
-        system_prompt:        str,
-        conversation:         list[dict],   # full turn history
+        system_prompt:         str,
+        conversation:          list[dict],
         function_declarations: list[dict],
         *,
         max_tokens:  int   = 16000,
         temperature: float = 0.3,
     ) -> dict:
         """
-        Multi-turn function-calling: sends the full conversation history
-        (including tool results) back to Gemma to continue the loop.
-        Returns same shape as complete_with_tools.
+        Multi-turn native tool-calling completion.
+        Rebuilds the full conversation history including tool results
+        in Together's expected format, then calls the model again.
         """
-        from google.genai import types
+        tools    = self._decls_to_together_tools(function_declarations)
+        messages = [{"role": "system", "content": system_prompt}]
 
-        tool   = types.Tool(function_declarations=function_declarations)
-        config = types.GenerateContentConfig(
-            system_instruction = system_prompt,
-            max_output_tokens  = max_tokens,
-            temperature        = temperature,
-            thinking_config    = types.ThinkingConfig(thinking_level=_THINKING_LEVEL),
-            tools              = [tool],
-        )
-
-        # Build Content objects from conversation history
-        contents = []
         for turn in conversation:
-            role  = turn["role"]   # "user" | "model" | "tool"
-            parts = []
-            if turn.get("text"):
-                parts.append(types.Part.from_text(text=turn["text"]))
-            if turn.get("function_call"):
-                fc = turn["function_call"]
-                parts.append(types.Part(function_call=types.FunctionCall(
-                    name=fc["name"], args=fc["args"]
-                )))
-            if turn.get("function_response"):
-                fr = turn["function_response"]
-                parts.append(types.Part(function_response=types.FunctionResponse(
-                    name=fr["name"], response=fr["response"]
-                )))
-            if parts:
-                contents.append(types.Content(parts=parts, role=role))
+            role = turn.get("role", "user")
 
-        # Estimate tokens across entire conversation history
-        conv_text = " ".join(
-            t.get("text", "") + str(t.get("function_response", ""))
-            for t in conversation
-        )
-        _tpm_acquire(_estimate_tokens(system_prompt + conv_text))
+            if role == "user" and turn.get("text"):
+                messages.append({"role": "user", "content": turn["text"]})
+
+            elif role == "model":
+                # Model's function_call turn — rebuild as assistant message
+                fc = turn.get("function_call", {})
+                if fc:
+                    messages.append({
+                        "role":    "assistant",
+                        "content": "",
+                        "tool_calls": [{
+                            "id":   "call_0",
+                            "type": "function",
+                            "function": {
+                                "name":      fc.get("name", ""),
+                                "arguments": json.dumps(fc.get("args", {})),
+                            },
+                        }],
+                    })
+                elif turn.get("text"):
+                    messages.append({"role": "assistant", "content": turn["text"]})
+
+            elif role == "tool":
+                # Tool result — inject as tool role message
+                fr   = turn.get("function_response", {})
+                resp = fr.get("response", {})
+                result_text = resp.get("result", str(resp))
+                messages.append({
+                    "role":         "tool",
+                    "tool_call_id": "call_0",
+                    "name":         fr.get("name", "tool"),
+                    "content":      result_text[:2000],
+                })
 
         last_err = None
         for attempt in range(1, _MAX_RETRIES + 1):
             try:
-                response = self._client.models.generate_content(
-                    model    = GEMMA_MODEL,
-                    contents = contents,
-                    config   = config,
+                response = self._client.chat.completions.create(
+                    model       = TOGETHER_MODEL,
+                    messages    = messages,
+                    tools       = tools,
+                    max_tokens  = max_tokens,
+                    temperature = temperature,
                 )
-                candidate = response.candidates[0] if response.candidates else None
-                if not candidate:
-                    return {"type": "text", "text": ""}
-
-                for part in (candidate.content.parts or []):
-                    if hasattr(part, "function_call") and part.function_call:
-                        fc = part.function_call
-                        return {
-                            "type": "function_call",
-                            "name": fc.name,
-                            "args": dict(fc.args) if fc.args else {},
-                        }
-
-                return {"type": "text", "text": response.text or ""}
-
+                return self._parse_tool_calls(response)
             except Exception as e:
                 last_err = e
                 print(f"[GemmaClient] multi-turn attempt {attempt}/{_MAX_RETRIES} failed: {e}")

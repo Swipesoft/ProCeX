@@ -88,7 +88,8 @@ class TTSAgent(BaseAgent):
 
         def _process_scene_gemini(scene):
             """Call Gemini TTS for one scene, save as MP3. Thread-safe."""
-            raw_text = scene.narration_text.strip()
+            from utils.context_injection import strip_context_tags as _strip_ctx
+            raw_text = _strip_ctx(scene.narration_text.strip())
             if not raw_text:
                 return scene, None, 0.0
 
@@ -214,7 +215,8 @@ class TTSAgent(BaseAgent):
 
         def _process_scene_openai(scene):
             """Call OpenAI TTS for one scene, save as MP3. Thread-safe."""
-            raw_text = scene.narration_text.strip()
+            from utils.context_injection import strip_context_tags as _strip_ctx
+            raw_text = _strip_ctx(scene.narration_text.strip())
             if not raw_text:
                 return scene, None, 0.0
 
