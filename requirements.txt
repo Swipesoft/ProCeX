@@ -40,6 +40,14 @@ tavily-python>=0.3.0
 pydub>=0.25.1
 soundfile>=0.12.1
 together
+
+# ── Deployment ─────────────────────────
+fastapi>=0.115.0
+uvicorn>=0.30.0
+celery
+upstash-redis
+redis
+boto3
 # ── Optional but recommended ──────────────────────────────────────────────────
 # For async TTS in batch:
 # aiohttp>=3.9.0
