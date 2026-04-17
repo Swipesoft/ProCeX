@@ -1,0 +1,82 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ProcEx — docker-compose.yml
+# For LOCAL development and testing only.
+# Production workers run on RunPod pulling the image from Docker Hub.
+#
+# Usage:
+#   docker-compose up --build          # start all services
+#   docker-compose up api worker       # start specific services
+#   docker-compose logs -f worker      # tail worker logs
+#   docker-compose down                # stop everything
+# ─────────────────────────────────────────────────────────────────────────────
+
+version: "3.9"
+
+services:
+
+  # ── Local Redis (replaces Upstash in dev) ──────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── FastAPI server ─────────────────────────────────────────────────────────
+  api:
+    build: .
+    command: uvicorn api_server:app --host 0.0.0.0 --port 8080 --reload
+    ports:
+      - "8080:8080"
+    env_file: .env
+    environment:
+      # Override Upstash URL with local Redis for dev
+      UPSTASH_REDIS_URL: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./:/app                        # live reload — mounts your source
+      - procex_output:/tmp/procex_output
+
+  # ── Celery worker ──────────────────────────────────────────────────────────
+  worker:
+    build: .
+    command: >
+      celery -A celery_app worker
+      --loglevel=info
+      --concurrency=1
+      -Q procex,procex-premium
+    env_file: .env
+    environment:
+      UPSTASH_REDIS_URL: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - procex_output:/tmp/procex_output
+    deploy:
+      replicas: 2                      # 2 concurrent pipeline runs locally
+
+  # ── Celery Flower (optional — job monitoring dashboard) ────────────────────
+  flower:
+    build: .
+    command: >
+      celery -A celery_app flower
+      --port=5555
+    ports:
+      - "5555:5555"
+    env_file: .env
+    environment:
+      UPSTASH_REDIS_URL: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    profiles:
+      - monitoring                     # only starts with: docker-compose --profile monitoring up
+
+volumes:
+  procex_output:
