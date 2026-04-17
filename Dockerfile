@@ -41,10 +41,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Install deployment dependencies that may not be in the original requirements.txt
 RUN pip install --no-cache-dir \
     manim \
-    celery \
-    redis \
-    boto3 \
-    upstash-redis \
     python-dotenv
 
 # ── Copy project source ───────────────────────────────────────────────────────
