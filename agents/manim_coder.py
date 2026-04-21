@@ -24,6 +24,7 @@ import os
 import re
 import py_compile
 import tempfile
+import json
 from state import ProcExState, Scene, VisualStrategy
 from config import ProcExConfig, MANIM_PALETTE_BLOCK
 from utils.llm_client import LLMClient
@@ -198,8 +199,8 @@ L12. CODE BLOCKS: when displaying code with the Code() object or code-styled Tex
         narrow for full function bodies. Split across multiple scenes if needed.
      """
 
-# ── Fallback: guaranteed-runnable cinematic title card ────────────────────────
-def _fallback_scene(class_name: str, scene: Scene) -> str:
+# ─────────── FallbackV1: guaranteed-runnable cinematic title card ────────────────────────
+def _fallback_scene_old(class_name: str, scene: Scene) -> str:
     title_raw = scene.narration_text[:55].replace("\\", "").replace('"', "'")
     wait_dur  = max(1.0, scene.duration_seconds - 3.5)
     return f'''class {class_name}(Scene):
@@ -221,7 +222,157 @@ def _fallback_scene(class_name: str, scene: Scene) -> str:
         self.play(FadeOut(Group(label, title, accent)), run_time=0.8)
         self.wait(0.5)
 '''
+# ───────────────────────────── FallbackV2 helpers ──────────────────────────────────────────────────────────
+def _summarise_scene_content(llm, narration: str) -> tuple[str, list[str]]:
+    """
+    Ask the LLM for a short scene title and 3-4 punchy highlight keypoints.
+    Uses complete_json() — works transparently across LLMClient, GemmaClient,
+    and ModalGemmaClient since all three share the same complete_json signature.
+    Returns (title, bullets). Degrades gracefully to sentence-split on any failure.
+    """
+    try:
+        result = llm.complete_json(
+            system_prompt=(
+                "You are a concise summariser for cinematic documentary videos. "
+                "Given a narration excerpt, produce a short scene title and 3 to 4 key highlight phrases. "
+                "Rules: subscene_title is 3-6 words, title-cased, no punctuation at end. "
+                "Each keypoint is 4-8 words, punchy and factual, no punctuation at end. "
+                "Return ONLY a JSON object with exactly these two keys. "
+                "Example: {\"subscene_title\": \"Einstein's Gravitational Theory\", "
+                "\"keypoints\": [\"Gravity bends spacetime itself\", "
+                "\"Light cannot escape black holes\", \"Time slows near massive objects\"]}"
+            ),
+            user_prompt=f"Narration:\n{narration[:800]}",
+            max_tokens=1024,
+            temperature=0.25,
+        )
+        if not isinstance(result, dict):
+            raise ValueError("Expected a JSON object")
 
+        title = str(result.get("subscene_title", "")).strip().replace('"', "'").replace("\\", "")[:72]
+        raw_bullets = result.get("keypoints", [])
+        if not isinstance(raw_bullets, list):
+            raise ValueError("keypoints is not a list")
+
+        bullets = [
+            str(b).strip().replace('"', "'").replace("\\", "")[:65]
+            for b in raw_bullets if str(b).strip()
+        ]
+        if title and bullets:
+            return title, bullets[:4]
+    except Exception:
+        pass
+
+    # Graceful degradation: first sentence as title, rest as bullets
+    sents = [s.strip() for s in re.split(r"[.!?]", narration) if s.strip()]
+    title   = sents[0][:72] if sents else narration[:55]
+    bullets = [s[:65] for s in sents[1:4]] if len(sents) > 1 else [narration[:55]]
+    return title, bullets
+
+# ── Fallback: guaranteed-runnable cinematic bullet-point slide ────────────────
+def _fallback_scene(class_name: str, scene: Scene, llm=None) -> str:
+    """
+    Last-resort Manim scene: cinematic slide with LLM-summarised bullet points,
+    viewfinder brackets, scene badge, and staggered reveal animations.
+    If llm is None or the LLM call fails, degrades to sentence-split highlights.
+    """
+    # ── 1. Get bullet points ─────────────────────────────────────────────────
+    if llm is not None:
+        heading_text, bullets = _summarise_scene_content(llm, scene.narration_text)
+    else:
+        sents = [s.strip() for s in re.split(r"[.!?]", scene.narration_text) if s.strip()]
+        heading_text = sents[0][:72] if sents else scene.narration_text[:55]
+        bullets = [s[:65] for s in sents[1:4]] if len(sents) > 1 else [scene.narration_text[:55]]
+
+    # Sanitize for embedding inside Python string literals
+    safe_heading = heading_text.replace("\\", "").replace('"', "'")
+    safe_bullets = [b.replace("\\", "").replace('"', "'") for b in bullets]
+    n = len(safe_bullets)
+
+    # ── 2. Pre-compute Manim code fragments ──────────────────────────────────
+    scene_badge  = f"{scene.id:02d}"
+    dot_colors   = ["CYAN", "GOLD", "PURPLE", "GREEN"]
+    reveal_rt    = round(n * 0.75, 1)
+    wait_after   = max(1.5, scene.duration_seconds - reveal_rt - 3.8)
+
+    # Per-bullet setup (8-space indent = inside construct body)
+    bullet_setup = ""
+    for i, (txt, col) in enumerate(zip(safe_bullets, dot_colors[:n])):
+        bullet_setup += (
+            f"\n        dot_{i} = Dot(radius=0.09, color={col})"
+            f"\n        lbl_{i} = Text(\"{txt}\", color=WHITE, font_size=27, width=9.8)"
+            f"\n        lbl_{i}.next_to(dot_{i}, RIGHT, buff=0.28)"
+            f"\n        row_{i} = VGroup(dot_{i}, lbl_{i})"
+        )
+
+    rows_var     = ", ".join(f"row_{i}" for i in range(n))
+    lagged_anims = ", ".join(f"FadeIn(row_{i}, shift=RIGHT * 0.35)" for i in range(n))
+
+    return f'''class {class_name}(Scene):
+    def construct(self):
+        self.camera.background_color = BG
+
+        # ── Cinematic letterbox bars ──────────────────────────────────────
+        top_bar = Rectangle(width=16, height=0.6,
+                            fill_color=BLACK, fill_opacity=0.88, stroke_width=0)
+        top_bar.to_edge(UP, buff=0)
+        bot_bar = Rectangle(width=16, height=0.6,
+                            fill_color=BLACK, fill_opacity=0.88, stroke_width=0)
+        bot_bar.to_edge(DOWN, buff=0)
+
+        # ── Scene badge (top-left) ────────────────────────────────────────
+        badge_bg = RoundedRectangle(
+            corner_radius=0.1, width=2.1, height=0.44,
+            stroke_color=CYAN, stroke_width=1.5,
+            fill_color=BG, fill_opacity=0.12
+        )
+        badge_lbl = Text("SCENE {scene_badge}", color=CYAN, font_size=17)
+        badge_lbl.move_to(badge_bg.get_center())
+        badge = VGroup(badge_bg, badge_lbl)
+        badge.to_corner(UL, buff=0.65)
+
+        # ── Viewfinder corner brackets ────────────────────────────────────
+        bw, bh, arm = 12.0, 6.0, 0.44
+        corners = [
+            (np.array([-bw/2,  bh/2, 0]), RIGHT, DOWN),
+            (np.array([ bw/2,  bh/2, 0]), LEFT,  DOWN),
+            (np.array([-bw/2, -bh/2, 0]), RIGHT, UP),
+            (np.array([ bw/2, -bh/2, 0]), LEFT,  UP),
+        ]
+        brks = VGroup()
+        for pos, hd, vd in corners:
+            hl = Line(pos, pos + hd * arm, color=DIM, stroke_width=1.4)
+            vl = Line(pos, pos + vd * arm, color=DIM, stroke_width=1.4)
+            brks.add(VGroup(hl, vl))
+
+        # ── Heading ───────────────────────────────────────────────────────
+        heading = Text("{safe_heading}", color=GOLD, font_size=38, width=11.0)
+        heading.move_to(UP * 1.8)
+
+        # ── CYAN divider line ─────────────────────────────────────────────
+        divider = Line(LEFT * 5.5, RIGHT * 5.5, color=CYAN, stroke_width=1.2)
+        divider.next_to(heading, DOWN, buff=0.35)
+{bullet_setup}
+
+        # ── Stack & position bullets below divider ────────────────────────
+        stack = VGroup({rows_var})
+        stack.arrange(DOWN, aligned_edge=LEFT, buff=0.38)
+        stack.next_to(divider, DOWN, buff=0.42)
+
+        # ── Animate ───────────────────────────────────────────────────────
+        self.add(top_bar, bot_bar)
+        self.play(FadeIn(badge, shift=RIGHT * 0.25), FadeIn(brks), run_time=0.55)
+        self.play(Write(heading), run_time=0.8)
+        self.play(GrowFromCenter(divider), run_time=0.4)
+        self.play(
+            LaggedStart({lagged_anims}, lag_ratio=0.75),
+            run_time={reveal_rt:.1f}
+        )
+        self.wait({wait_after:.1f})
+        self.play(FadeOut(VGroup(badge, brks, heading, divider, stack)), run_time=0.8)
+        self.wait(0.35)
+'''
+# ────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 def _build_coder_prompt(
     scene: Scene,
@@ -455,7 +606,7 @@ class ManimCoder(BaseAgent):
         for attempt in range(self.cfg.max_llm_retries):
             try:
                 from utils.context_injection import wrap_with_context as _ctx_wrap
-                _scene_ctx = getattr(scene, "_context", "")[:200] # use only 200 tokens to avoid manim coder ctx overbloat
+                _scene_ctx = getattr(scene, "_context", "") # [:300] # use only 300 tokens to avoid manim coder ctx overbloat
                 raw  = self.llm.complete(
                     CODER_SYSTEM,
                     _ctx_wrap(

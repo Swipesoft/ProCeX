@@ -485,7 +485,7 @@ class RendererAgent(BaseAgent):
         try:
             class_name            = getattr(scene, "manim_class_name", f"Scene{scene.id:02d}")
             scene.manim_class_name = class_name
-            fallback_code = _fallback_scene(class_name, scene)
+            fallback_code = _fallback_scene(class_name, scene, llm=self.llm)
             # Write to a dedicated fallback file so it doesn't clobber the broken code
             fb_path = os.path.join(
                 self.cfg.dirs["manim"], f"scene_{scene.id:02d}_fallback.py"
