@@ -4,6 +4,7 @@
 # IDE
 .idea/
 
+
 # Virtual environment
 venv/
 .venv/
