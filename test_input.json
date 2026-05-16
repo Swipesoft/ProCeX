@@ -1,0 +1,11 @@
+{
+  "input": {
+    "topic": "How does a CPU work",
+    "mode": "research",
+    "provider": "gemma",
+    "minutes": 1,
+    "style": "youtube-tutorial",
+    "resolution": "1080p",
+    "context": ""
+  }
+}
