@@ -4,7 +4,7 @@ utils/gemma_client.py
 GemmaClient — Gemma 4 31B via your Modal-hosted vLLM endpoint.
 
 Replaces the TogetherAI backend which timed out on inputs >10K tokens.
-Your Modal deployment (modal_serve.py) runs vLLM with a 32K context window
+Your Modal deployment (modal_serve.py) runs vLLM with a 65K context window
 on 2× H100 SXM, so long-context agent calls complete without throttling.
 
 Public interface is IDENTICAL to the previous version — agents swap it in
@@ -23,6 +23,14 @@ any call that didn't originate from this client. Set both env vars:
 
     MODAL_GEMMA_URL       = https://<workspace>--gemma4-31b-serve.modal.run
     MODAL_INTERNAL_SECRET = <same value stored in your modal-internal-secret>
+
+max_tokens
+----------
+All methods hard-override max_tokens to 65536 regardless of what the caller
+passes. This is intentional: input prompts in ProcEx regularly exceed 40K
+tokens, which leaves fewer than 16K tokens for output — vLLM either clamps
+silently or errors. Setting max_tokens=65536 tells vLLM "use whatever remains
+after the input", which is the correct behaviour for long-context agent calls.
 """
 from __future__ import annotations
 from dotenv import load_dotenv as _load_dotenv
@@ -42,9 +50,8 @@ _load_dotenv(
 )
 # ───────────────────────────────────────────────────────────────────────────────
 
-#if TYPE_CHECKING:
-    # from config import ProcExConfig
-
+# if TYPE_CHECKING:
+#     from config import ProcExConfig
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -53,10 +60,15 @@ MODAL_URL_ENV    = os.environ.get("MODAL_URL_ENV_KEY",     "MODAL_GEMMA_URL")
 MODAL_SECRET_ENV = os.environ.get("MODAL_SECRET_ENV_KEY",  "MODAL_INTERNAL_SECRET")
 SECRET_HEADER    = os.environ.get("MODAL_SECRET_HEADER",   "X-Internal-Secret")
 
-_MAX_RETRIES = 3
-_RETRY_SLEEP = 1.0
-# vLLM handles internal concurrency — raise semaphore ceiling vs. Together's 1
-_MODAL_SEM   = _threading.Semaphore(16)
+_MAX_RETRIES    = 3
+_RETRY_SLEEP    = 1.0
+_MODAL_SEM      = _threading.Semaphore(16)
+
+# Hard override — always claim the full context window so vLLM can use whatever
+# token budget remains after the input. Input prompts in ProcEx regularly exceed
+# 40K tokens, which means a 16K max_tokens budget causes vLLM to error or return
+# empty outputs. 65536 matches --max-model-len set in modal_serve.py.
+_MAX_TOKENS     = 65536
 
 
 class GemmaClient:
@@ -106,7 +118,7 @@ class GemmaClient:
     def _call(
         self,
         messages:    list[dict],
-        max_tokens:  int   = 16000,
+        max_tokens:  int   = _MAX_TOKENS,
         temperature: float = 0.7,
         json_mode:   bool  = False,
         schema:      Optional[dict] = None,
@@ -115,13 +127,20 @@ class GemmaClient:
         """
         Single OpenAI-compatible chat completion call to Modal/vLLM with retry.
         Returns the raw response object; callers extract .choices[0].message.
+
+        max_tokens is hard-overridden to _MAX_TOKENS (65536) regardless of what
+        the caller passes. See module docstring for rationale.
         """
+        # Hard override — input prompts can exceed 40K tokens; any smaller value
+        # leaves vLLM with no room to generate and it either clamps or errors.
+        max_tokens = _MAX_TOKENS
+
         kwargs: dict[str, Any] = dict(
             model       = MODEL_NAME,
             messages    = messages,
             max_tokens  = max_tokens,
             temperature = temperature,
-            timeout     = 300,
+            timeout     = 1200,   # 20 min — matches Modal function timeout
         )
         if json_mode:
             if schema:
@@ -192,12 +211,13 @@ class GemmaClient:
         user_prompt:   str,
         *,
         json_mode:        bool            = False,
-        max_tokens:       int             = 16000,
+        max_tokens:       int             = _MAX_TOKENS,   # overridden in _call
         temperature:      float           = 0.7,
         schema:           Optional[dict]  = None,
         model_override:   Optional[str]   = None,   # ignored — Modal Gemma only
         primary_provider: Optional[str]   = None,   # ignored — Modal Gemma only
     ) -> str:
+        max_tokens = _MAX_TOKENS  # hard override — see module docstring
         sys_text = self._inject_json_instructions(system_prompt, json_mode, schema)
         messages = self._build_messages(sys_text, user_prompt)
         return self._call_text(
@@ -213,11 +233,12 @@ class GemmaClient:
         system_prompt: str,
         user_prompt:   str,
         *,
-        max_tokens:       int            = 16000,
+        max_tokens:       int            = _MAX_TOKENS,   # overridden in _call
         temperature:      float          = 0.3,
         schema:           Optional[dict] = None,
         primary_provider: Optional[str]  = None,
     ) -> dict | list:
+        max_tokens = _MAX_TOKENS  # hard override — see module docstring
         last_err = None
         for attempt in range(1, _MAX_RETRIES + 1):
             raw = self.complete(
@@ -252,10 +273,11 @@ class GemmaClient:
         image_bytes:   bytes,
         *,
         image_mime:       str           = "image/png",
-        max_tokens:       int           = 16384,
+        max_tokens:       int           = _MAX_TOKENS,   # overridden in _call
         temperature:      float         = 0.1,
         primary_provider: Optional[str] = None,
     ) -> str:
+        max_tokens = _MAX_TOKENS  # hard override — see module docstring
         messages = [
             {"role": "system", "content": system_prompt},
             {
@@ -277,10 +299,11 @@ class GemmaClient:
         image_bytes:   bytes,
         *,
         image_mime:  str            = "image/png",
-        max_tokens:  int            = 16384,
+        max_tokens:  int            = _MAX_TOKENS,   # overridden in _call
         temperature: float          = 0.1,
         schema:      Optional[dict] = None,
     ) -> dict | list:
+        max_tokens = _MAX_TOKENS  # hard override — see module docstring
         sys_text = self._inject_json_instructions(system_prompt, True, schema)
         messages = [
             {"role": "system", "content": sys_text},
@@ -354,9 +377,10 @@ class GemmaClient:
         user_prompt:           str,
         function_declarations: list[dict],
         *,
-        max_tokens:  int   = 16000,
+        max_tokens:  int   = _MAX_TOKENS,   # overridden in _call
         temperature: float = 0.3,
     ) -> dict:
+        max_tokens = _MAX_TOKENS  # hard override — see module docstring
         messages = self._build_messages(system_prompt, user_prompt)
         tools    = self._decls_to_tools(function_declarations)
 
@@ -381,9 +405,10 @@ class GemmaClient:
         conversation:          list[dict],
         function_declarations: list[dict],
         *,
-        max_tokens:  int   = 16000,
+        max_tokens:  int   = _MAX_TOKENS,   # overridden in _call
         temperature: float = 0.3,
     ) -> dict:
+        max_tokens = _MAX_TOKENS  # hard override — see module docstring
         tools    = self._decls_to_tools(function_declarations)
         messages = [{"role": "system", "content": system_prompt}]
 
